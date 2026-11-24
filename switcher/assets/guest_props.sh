@@ -894,6 +894,24 @@ add)
         echo "persist.sys.saupwk_test=1" >> "$NEW"
         echo "guest_props: persist.sys.saupwk_test=1 for the session (no 5 s HAL wait per power key press)"
     fi
+    # Android 17's libhidlbase: with hwservicemanager.always_sets_disabled=true
+    # (the image's system build.prop, loaded above) every HIDL client first
+    # waits for hwservicemanager.disabled to exist ("Waited for
+    # hwservicemanager.disabled for a second, waiting another..."), which
+    # Android 17's hwservicemanager.rc sets. One UI 8's (Android 16) never
+    # does: on the S22 (SM-S901B, One UI 9.5 on One UI 8, 7ddd73b9) the guest's
+    # vold and surfaceflinger waited forever, gvld never registered and the
+    # start stopped every time. One UI's own answer when it has none: false
+    # while its hwservicemanager runs, true when it does not. Memory only and
+    # in the added list, so remove deletes it again; a value One UI set stays.
+    HSD=hwservicemanager.disabled
+    if { grep -qx 'hwservicemanager\.always_sets_disabled=true' "$NEW" || [ "$(getprop hwservicemanager.always_sets_disabled)" = true ]; } &&
+            ! grep -qxF "$HSD" "$HOST" &&
+            [ -z "$(getprop "$HSD")" ] && ! grep -q "^$HSD=" "$NEW"; then
+        if [ "$(getprop hwservicemanager.ready)" = true ] || [ "$(getprop init.svc.hwservicemanager)" = running ]; then hsv=false; else hsv=true; fi
+        echo "$HSD=$hsv" >> "$NEW"
+        echo "guest_props: $HSD=$hsv for the session (the image's HIDL waits for it; One UI's hwservicemanager does not set it)"
+    fi
     # Inner screen status bar (Fold layout): the image brings the Find N6's
     # hole 2102,28:2176,102. OplusStatusBarUtils.isHoleType calls a hole
     # entirely right of the middle (2256/2 = 1128) HOLE_RIGHT, and
@@ -931,15 +949,39 @@ add)
         sed -i "s/^ro\.oplus\.display\.screenhole\.positon=.*/ro.oplus.display.screenhole.positon=$h/" "$NEW" &&
             echo "guest_props: ro.oplus.display.screenhole.positon=$h for the session ($what; the image's: $was)"
     fi
+    # Bar-phone ColorOS app-open / recents corner radius (SmoothCornerV2):
+    # OplusLauncher (vq5.e) multiplies ro.oplus.display.rc.size by 1.25f at
+    # G2 weight 2.7; without this prop, Launcher and WindowManager fall back
+    # to the guest image's 132px -> 165px, causing the corner snap ("catches up
+    # to corners"). Calibrating at 89% of host_corner_radius yields ~125px
+    # on S24 FE (113 -> 100 -> 125px), matching its 125.55px corner tangent.
+    # ONEOS_GUEST_OPLUS_RC_SIZE=0 leaves the property unset.
+    if [ "${ONEOS_GUEST_FORM:-fold}" != fold ] && [ "${ONEOS_GUEST_OPLUS_RC_SIZE:-1}" = 1 ] &&
+        grep -q '^ro\.oplus\.' "$NEW" && [ -f "$STAGE/host_corner_radius" ] && [ ! -L "$STAGE/host_corner_radius" ]; then
+        rc_host=$(head -n 1 "$STAGE/host_corner_radius" 2>/dev/null)
+        case "$rc_host" in ''|*[!0-9]*) rc_host="" ;; esac
+        if [ "${rc_host:-0}" -gt 0 ] && [ "${rc_host:-0}" -le 400 ]; then
+            rc=$((rc_host * 89 / 100))
+            [ "$rc" -lt 1 ] && rc=1
+            sed -i '/^ro\.oplus\.display\.rc\.size=/d' "$NEW"
+            echo "ro.oplus.display.rc.size=$rc,$rc,$rc,$rc" >> "$NEW"
+            echo "guest_props: ro.oplus.display.rc.size=$rc,$rc,$rc,$rc for the session (host_corner_radius=${rc_host}px, 89% smooth corner calibration)"
+        fi
+    fi
     # Mid-range Galaxy A and M phones (0.5.14, owner's A36 on LineageOS: "a bit sluggish"): the
     # guest's SystemUI draws its rounded corners and cutout as one full-screen layer
     # (ScreenDecorHwcOverlay) that their composer does not take, so SurfaceFlinger composed the whole
     # screen on the GPU every frame at 120 Hz (1,325 GPU-missed frames, GPU pinned at 1010 MHz).
     # Without it the panel's own rounded corners are all there is to see. ONEOS_GUEST_SCREEN_DECOR=1
     # keeps it.
+    # 0.5.36: not with PixelOS's corner overlay (guest_prepare.sh, OneOSPixelCorners.apk). Without the
+    # layer, apps rounding to the display's radius showed grey corners; on the A36 PixelOS's composer
+    # takes the layer (composition DISPLAY_DECORATION, no GPU composition, live 11-22).
     case "$(getprop ro.product.model)" in
         SM-A*|SM-M*)
-            if [ "${ONEOS_GUEST_SCREEN_DECOR:-0}" != 1 ]; then
+            if [ -f "$STAGE/oem/overlay/OneOSPixelCorners.apk" ] && [ "${ONEOS_GUEST_SCREEN_DECOR:-}" != 0 ]; then
+                echo "guest_props: screen decorations kept on (PixelOS's corners at this phone's radius)"
+            elif [ "${ONEOS_GUEST_SCREEN_DECOR:-0}" != 1 ]; then
                 sed -i '/^debug\.disable_screen_decorations=/d' "$NEW"
                 echo "debug.disable_screen_decorations=true" >> "$NEW"
                 echo "guest_props: debug.disable_screen_decorations=true for the session (mid-range Galaxy: the decor layer went to the GPU every frame)"
@@ -1089,16 +1131,40 @@ add)
        [ "${ONEOS_GUEST_FORM:-fold}" != fold ] && [ "${ONEOS_GUEST_QHD_BASE:-1}" = 1 ]; then
         LD=ro.sf.lcd_density
         ld=$(getprop "$LD")
-        # The width the guest runs the panel at is One UI's (S25 Ultra at QHD: 1440; S24+ at FHD+: 1080, 2c69348f).
+        # The width the guest runs the panel at. One UI's when One UI runs the whole panel. With One UI at FHD+
+        # on a QHD panel it is the composer's choice: the Snapdragon Ultras and the S25+ give the guest the
+        # whole panel (0.5.34 S25 Ultra 24fdba74/5e384902: guest at 1440 px on base 450, HyperOS's auto density
+        # took 576 to 730, a 1.27x zoom with Control Center cut off on both sides), the Exynos S24+ runs it at
+        # One UI's 1080 (2c69348f, acc35c07, 88682c35). The width the last session ran at (UI activator,
+        # data/oneos_guest_width) when it is one of the two; else the whole panel, but on Exynos One UI's.
         pw=$(sed -n 's/.* width=\([0-9]*\) .*/\1/p' "$STAGE/host_display" 2>/dev/null)
+        pp=$(sed -n 's/.* physical=\([0-9]*\)$/\1/p' "$STAGE/host_display" 2>/dev/null)
+        gw=$(head -c 8 "$STAGE/data/oneos_guest_width" 2>/dev/null | tr -dc 0-9)
+        [ -L "$STAGE/data/oneos_guest_width" ] && gw=""
+        pws="One UI's width"
+        case "$pw:$pp" in
+            *[!0-9:]*|:*|*:) ;;
+            *) if [ "$pw" != "$pp" ]; then
+                   if [ -n "$gw" ] && { [ "$gw" = "$pw" ] || [ "$gw" = "$pp" ]; }; then
+                       pw=$gw; pws="the last session's"
+                   else
+                       case "$(getprop ro.board.platform)" in
+                           s5e*|exynos*|erd*) pws="One UI's width (Exynos)" ;;
+                           *) pw=$pp; pws="the whole panel" ;;
+                       esac
+                   fi
+               fi ;;
+        esac
         case "$ld:$pw" in
             *[!0-9:]*|:*|*:) echo "guest_props: HyperOS base density left at One UI's (${ld:-none}; panel width ${pw:-not recorded})" ;;
             *) if [ "$pw" -gt 1080 ] && [ "$ld" -ge 120 ] && grep -qxF "$LD" "$HOST"; then
                    nd=$(( (ld * pw + 540) / 1080 ))
                    if "$RP" -n "$LD" "$nd" 2>/dev/null; then
                        echo "$LD=$ld" >> "$OVR"
-                       echo "guest_props: $LD=$nd for the session (HyperOS's base at the $pw px it runs the panel at; One UI's $ld is its 1080 px mode's)"
+                       echo "guest_props: $LD=$nd for the session (HyperOS's base at the $pw px it runs the panel at, $pws; One UI's $ld is its 1080 px mode's)"
                    fi
+               else
+                   echo "guest_props: HyperOS base density left at One UI's $ld (the guest at $pw px, $pws)"
                fi ;;
         esac
     fi
@@ -1573,6 +1639,124 @@ ro.miui.backdrop_sampling_enabled=true"
             echo "guest_props: OPPO fingerprint: no in-display sensor known (features '${fpf}', position '${UPOS}', dpi '${UDPI}')"
         fi
     fi
+    # Hardware Codec2 components on Exynos (0.5.33+ S24 FE 97db2ff1: mediaserver64 queried
+    # samsung.hardware.media.c2@1.2-service for all 15 c2.exynos.* codecs and skipped every one of
+    # them without a "not found in xml" or "disabled" log, leaving only c2.android.* software codecs,
+    # because Codec2InfoBuilder filters out non-.avc.* vendor codecs when debug.stagefright.ccodec
+    # is 1 or 2). Explicitly set 4 when /vendor/etc declares c2.exynos codecs so hardware AVC/HEVC/
+    # VP8/VP9/AV1 encoders and decoders stay in MediaCodecList. ONEOS_GUEST_CCODEC=keep leaves as is.
+    # ColorOS/OxygenOS guests only (tested there; 0.5.37 review of pull request #355).
+    if [ "${ONEOS_GUEST_CCODEC:-4}" != keep ] && { [ -d "$ROOTFS/my_product" ] || [ -e "$ROOTFS/system/framework/oplus-services.jar" ]; } && \
+       grep -qE 'name="c2\.exynos\.' /vendor/etc/media_codecs*.xml 2>/dev/null; then
+        key=debug.stagefright.ccodec
+        if grep -qxF "$key" "$HOST"; then
+            hv=$(getprop "$key")
+            if [ "$hv" != 4 ] && "$RP" -n "$key" 4 2>/dev/null; then
+                echo "$key=$hv" >> "$OVR"
+                echo "guest_props: $key=$hv overridden to 4 for the session (keeps Exynos Codec2 codecs)"
+            fi
+        else
+            drop_new "$key" || true
+            echo "$key=4" >> "$NEW"
+            echo "guest_props: $key=4 for the session (keeps Exynos Codec2 codecs)"
+        fi
+    fi
+    # GPU composition for SurfaceFlinger VirtualDisplays on non-Qualcomm HWC (S24 FE 97db2ff1: Exynos
+    # HWC returned getRenderIntents BAD_PARAMETER 4 on OPLUSScreenRecording, SF logged "Invalid
+    # device requested composition type change: Client (1) --> Device (2)" and "advanceFrame: no
+    # buffer, bailing out (-12)", and 0 frames reached the recorder). Set debug.sf.enable_hwc_vds=0
+    # so SurfaceFlinger uses GPU composition for VirtualDisplays. ONEOS_GUEST_HWC_VDS=1 keeps HWC VDS.
+    # ColorOS/OxygenOS guests only (their screen recorder; 0.5.37 review of pull request #355).
+    if [ "${ONEOS_GUEST_HWC_VDS:-0}" != 1 ] && [ "$(getprop ro.soc.manufacturer)" != QTI ] && { [ -d "$ROOTFS/my_product" ] || [ -e "$ROOTFS/system/framework/oplus-services.jar" ]; }; then
+        key=debug.sf.enable_hwc_vds
+        if grep -qxF "$key" "$HOST"; then
+            hv=$(getprop "$key")
+            if [ "$hv" != 0 ] && [ "$hv" != false ] && "$RP" -n "$key" 0 2>/dev/null; then
+                echo "$key=$hv" >> "$OVR"
+                echo "guest_props: $key=$hv overridden to 0 for the session (GPU VirtualDisplay on non-QTI HWC)"
+            fi
+        else
+            drop_new "$key" || true
+            echo "$key=0" >> "$NEW"
+            echo "guest_props: $key=0 for the session (GPU VirtualDisplay on non-QTI HWC)"
+        fi
+    fi
+    # Disable ColorOS UniRender compose-uni before SurfaceFlinger boots on non-Qualcomm phones
+    # (guest_prepare.sh disables sys_global_uni_render_list.xml, which only flips persist after SF
+    # already booted with sys.unirender.composeuni.boot=1 and attached UniRenderSurface to Display 1
+    # and ScreenRecording's VirtualDisplay). ONEOS_GUEST_UNIRENDER=1 keeps it.
+    if [ "${ONEOS_GUEST_UNIRENDER:-0}" != 1 ] && [ "$(getprop ro.soc.manufacturer)" != QTI ] && [ -d "$ROOTFS/my_product" ]; then
+        for key in ro.oplus.sys.unirender.composeuni.enable persist.sys.unirender.composeuni.enable; do
+            if grep -qxF "$key" "$HOST"; then
+                hv=$(getprop "$key")
+                if { [ "$hv" = true ] || [ "$hv" = 1 ]; } && "$RP" -n "$key" false 2>/dev/null; then
+                    echo "$key=$hv" >> "$OVR"
+                    echo "guest_props: $key=$hv overridden to false for the session (UniRender compose-uni off)"
+                fi
+            else
+                drop_new "$key" || true
+                echo "$key=false" >> "$NEW"
+                echo "guest_props: $key=false for the session (UniRender compose-uni off)"
+            fi
+        done
+    fi
+    # Video thumbnail extraction on non-Qualcomm GPUs (S24 FE Exynos Xclipse 940):
+    # StagefrightMetadataRetriever -> FrameDecoder defaults to surface mode via c2.exynos.h264.decoder +
+    # renderfright (libstagefright_framecapture_utils.so) when media.stagefright.thumbnail.prefer_hw_codecs=true.
+    # Renderfright's GLSL shader compiles "uniform sampler3D tonemapper" without #version 300 es / extension
+    # ("ERROR: 0:3: 'sampler3D' : Illegal use of reserved word"), failing program link and returning a black
+    # first-frame thumbnail for ScreenRecorder MP4s in ColorOS Gallery even though frame 0 itself is valid.
+    # Setting prefer_hw_codecs=false makes FrameDecoder use CPU buffer mode (c2.android.avc.decoder) for
+    # thumbnails only (video playback still uses c2.exynos.* hardware codecs). ONEOS_GUEST_THUMB_SW=0 leaves it.
+    # ColorOS/OxygenOS guests only (their Gallery; 0.5.37 review of pull request #355).
+    if [ "${ONEOS_GUEST_THUMB_SW:-1}" = 1 ] && [ "$(getprop ro.soc.manufacturer)" != QTI ] && { [ -d "$ROOTFS/my_product" ] || [ -e "$ROOTFS/system/framework/oplus-services.jar" ]; }; then
+        key=media.stagefright.thumbnail.prefer_hw_codecs
+        if grep -qxF "$key" "$HOST"; then
+            hv=$(getprop "$key")
+            if [ "$hv" != false ] && [ "$hv" != 0 ] && "$RP" -n "$key" false 2>/dev/null; then
+                echo "$key=$hv" >> "$OVR"
+                echo "guest_props: $key=$hv overridden to false for the session (avoids renderfright sampler3D shader fail on non-QTI GPU thumbnails)"
+            fi
+        else
+            drop_new "$key" || true
+            echo "$key=false" >> "$NEW"
+            echo "guest_props: $key=false for the session (avoids renderfright sampler3D shader fail on non-QTI GPU thumbnails)"
+        fi
+    fi
+    # ColorOS Settings -> About device processor line reads ro.product.oplus.cpuinfo
+    # via DeviceProcessorConfig (/my_stock/etc/extension/config_processor_com.android.settings.xml);
+    # without a match in that XML (Samsung Exynos SoCs are absent), OplusDeviceInfoUtils logs
+    # "getCpuInfo: info from parser: null" and shows just "1 core" / core-only fallback.
+    # guest_prepare.sh adds the Exynos model entries into the bound XML; expose the SoC key here.
+    # ONEOS_GUEST_OPLUS_CPU=0 leaves it out.
+    if [ "$GUEST_OPLUS" = 1 ] && [ "${ONEOS_GUEST_OPLUS_CPU:-1}" = 1 ]; then
+        soc=$(getprop ro.soc.model)
+        mod=$(getprop ro.product.vendor.model)
+        [ -n "$mod" ] || mod=$(getprop ro.product.model)
+        ocpu=""
+        case "$soc" in
+            s5e9945)
+                case "$mod" in
+                    SM-S721*) ocpu=s5e9945e ;;
+                    *) ocpu=s5e9945 ;;
+                esac ;;
+            s5e9955|s5e9965|s5e9925|s5e8855|s5e8845|s5e8835|s5e8825) ocpu="$soc" ;;
+        esac
+        if [ -n "$ocpu" ]; then
+            key=ro.product.oplus.cpuinfo
+            if grep -qxF "$key" "$HOST"; then
+                hv=$(getprop "$key")
+                if [ "$hv" != "$ocpu" ] && "$RP" -n "$key" "$ocpu" 2>/dev/null; then
+                    echo "$key=$hv" >> "$OVR"
+                    echo "guest_props: $key=$hv overridden to $ocpu for the session (ColorOS About device processor name & core count)"
+                fi
+            else
+                drop_new "$key" || true
+                echo "$key=$ocpu" >> "$NEW"
+                echo "guest_props: $key=$ocpu for the session (ColorOS About device processor name & core count)"
+            fi
+        fi
+    fi
     echo "guest_props add: batch $(date +%T)"
     if "$RP" -n -f "$NEW" 2>/dev/null; then
         cut -d= -f1 "$NEW" > "$ADDED"
@@ -1670,14 +1854,43 @@ ro.miui.backdrop_sampling_enabled=true"
                 echo "guest_props: $key='$g' for the session (One UI: $h; the guest has no 32-bit zygote)"
         done
     fi
+    # 120 Hz low-latency SurfaceFlinger work durations for non-Qualcomm ColorOS guests (keeps panel responsive at ~12.8 ms pipeline).
+    # Non-Qualcomm phones with a 120 Hz mode only (0.5.37 review of pull request #355: as written it also ran on
+    # Snapdragon and on 60/90 Hz panels).
+    if [ "${ONEOS_GUEST_SF_LOW_LATENCY:-1}" = 1 ] && [ "$(getprop ro.soc.manufacturer)" != QTI ] &&
+       grep -qE 'fps=1(19|20)\.' "$STAGE/display_host.txt" 2>/dev/null &&
+       { [ -e "$ROOTFS/system/framework/oplus-services.jar" ] || [ -L "$ROOTFS/system/framework/oplus-services.jar" ]; }; then
+        for kv in \
+            debug.sf.use_phase_offsets_as_durations=1 \
+            debug.sf.late.app.duration=8333333 \
+            debug.sf.late.sf.duration=4500000 \
+            debug.sf.early.app.duration=8333333 \
+            debug.sf.early.sf.duration=4500000 \
+            debug.sf.earlyGl.app.duration=8333333 \
+            debug.sf.earlyGl.sf.duration=4500000; do
+            key=${kv%%=*}; val=${kv#*=}
+            h=$(getprop "$key")
+            [ "$h" != "$val" ] || continue
+            if [ -n "$h" ] && ! grep -qxF "$key" "$ADDED" 2>/dev/null; then
+                echo "$key=$h" >> "$OVR"
+            elif [ -z "$h" ] && ! grep -qxF "$key" "$ADDED" 2>/dev/null; then
+                echo "$key" >> "$ADDED"
+            fi
+            "$RP" -n "$key" "$val" 2>/dev/null
+        done
+        echo "guest_props: SurfaceFlinger 120Hz low-latency durations enabled (8.33ms app / 4.5ms sf)"
+    fi
     # Vsync phase offsets on a phone that also runs SurfaceFlinger on durations (11-19 report
     # 5d0564ae, A36 on One UI 9.5: the guest's surfaceflinger aborted at once, "debug.sf.
     # early_phase_offset_ns is set to 500000 but expecting duration", black screen, return after 30 s).
     # With debug.sf.use_phase_offsets_as_durations=1 AOSP's WorkDuration refuses any phase offset
     # property that is set; One UI's own surfaceflinger lives with it, a newer one does not. Each one
     # is "-1" for the session (SurfaceFlinger's "not set"; an empty value reads as 0, still set).
+    # 0.5.38: the vendor's ro.surface_flinger phase offsets too (Galaxy A25 on OxygenOS 16, 85e56eb4, 0.5.37's
+    # 120 Hz durations above: "ro.surface_flinger.vsync_event_phase_offset_ns is set but expecting duration",
+    # black screen, return after 30 s).
     if [ "$(getprop debug.sf.use_phase_offsets_as_durations)" = 1 ]; then
-        for key in $(getprop | sed -n 's/^\[\(debug\.sf\.[a-z_]*phase_offset[a-z_]*_ns\)\]: \[-\{0,1\}[0-9][0-9]*\]$/\1/p'); do
+        for key in $(getprop | sed -n 's/^\[\(debug\.sf\.[a-z_]*phase_offset[a-z_]*_ns\)\]: \[-\{0,1\}[0-9][0-9]*\]$/\1/p;s/^\[\(ro\.surface_flinger\.[a-z_]*phase_offset[a-z_]*_ns\)\]: \[-\{0,1\}[0-9][0-9]*\]$/\1/p'); do
             h=$(getprop "$key")
             [ "$h" != -1 ] || continue
             echo "$key=$h" >> "$OVR" && "$RP" -n "$key" -1 2>/dev/null &&
@@ -1695,13 +1908,89 @@ ro.miui.backdrop_sampling_enabled=true"
     # few seconds, then the return. QPerformance.jar is in the guest's boot image,
     # so it cannot be patched; the image's own value for the session instead,
     # whenever the guest ships that library and the phone is not Qualcomm's.
+    rm -f "$STAGE/host_boot_hardware"
     if [ -f "$ROOTFS/system/system_ext/lib64/libqti_performance.so" ]; then
         h=$(getprop ro.boot.hardware)
         case "$h" in
             qcom*) ;;
             *) echo "ro.boot.hardware=$h" >> "$OVR" && "$RP" -n ro.boot.hardware qcom 2>/dev/null &&
-                   echo "guest_props: ro.boot.hardware=qcom for the session (One UI: $h; the guest's zygote then preloads its Qualcomm perf library)" ;;
+                   printf '%s\n' "$h" > "$STAGE/host_boot_hardware" &&
+                   echo "guest_props: ro.boot.hardware=qcom for boot (One UI: $h; zygote preloads libqti_performance.so, then UI Activator restores $h)" ;;
         esac
+    fi
+    # Experimental tester builds only (0.5.35-oneui8test1; oneos_root.sh starts this pair only with
+    # ONEOS_A17_ON_A16=1): One UI 9.5 (Android 17, SDK 37) on a phone still on One UI 8.0/8.5 (Android 16,
+    # SDK 36). The guest framework is Android 17's, but it reads the platform version from these phone-wide
+    # props, which are One UI 8's: Build.VERSION.SDK_INT would say 36 under Android 17 code, and the
+    # framework's own version checks and every app's (target SDK, API levels) would take Android 16 paths.
+    # The image's own values for the session through the override list, so `remove` puts One UI's back
+    # before One UI's system_server reads them. Any other guest, and One UI 9.5 on a One UI 9 phone, already
+    # has the phone's version. The minor version (sdk_full) goes with it, so the block below leaves it.
+    a17_host=$(getprop ro.build.version.sdk)
+    a17_guest=$(sed -n 's/^ro.build.version.sdk=//p' "$ROOTFS/system/build.prop" 2>/dev/null | tail -n 1)
+    if [ "$a17_host" = 36 ] && [ "$a17_guest" = 37 ] && grep -q '^ro.build.version.oneui=' "$ROOTFS/system/build.prop" 2>/dev/null; then
+        for key in ro.build.version.sdk ro.build.version.sdk_full ro.build.version.release \
+                   ro.build.version.release_or_codename ro.build.version.release_or_preview_display ro.build.version.codename; do
+            g=$(sed -n "s/^$key=//p" "$ROOTFS/system/build.prop" 2>/dev/null | tail -n 1)
+            h=$(getprop "$key")
+            case "$g" in ""|*[!A-Za-z0-9._-]*) continue ;; esac
+            [ -n "$h" ] && [ "$g" != "$h" ] || continue
+            echo "$key=$h" >> "$OVR" && "$RP" -n "$key" "$g" 2>/dev/null &&
+                echo "guest_props: $key=$g for the session (experimental One UI 9.5 on One UI 8; One UI: $h)"
+        done
+        echo "guest_props: experimental One UI 9.5 on One UI 8 (SDK $a17_host): the guest's Android version is now $(getprop ro.build.version.sdk)"
+        # The camera is off in this session (guest_prepare.sh): the set's framework_patched.jar carries One UI
+        # 9.0's ICameraService codes, and One UI 8's cameraserver numbers its methods its own way, so a call from
+        # SystemUI's torch tile or any app's CameraManager would reach another method there. AOSP's
+        # config.disable_cameraservice (read by SystemServer, which then starts no CameraServiceProxy, and by
+        # CameraManager, which then never connects to media.camera; both read it in the One UI 9.5 image's
+        # services.jar and framework.jar) keeps the guest's Java camera stack away from it. Set for the session
+        # and removed on return. ONEOS_A17_CAMERA_SERVICE=1 leaves it unset (a manual start's test only).
+        # 0.5.39: not when guest_prepare.sh bound framework_patched_oneui8.jar (One UI 8's camera codes).
+        if [ -f "$STAGE/a16_camera_on" ]; then
+            echo "guest_props: experimental One UI 9.5 on One UI 8: camera on (One UI 8's camera codes)"
+        elif [ "${ONEOS_A17_CAMERA_SERVICE:-0}" != 1 ]; then
+            key=config.disable_cameraservice
+            h=$(getprop "$key")
+            if [ "$h" != true ]; then
+                if getprop | grep -qF "[$key]: ["; then
+                    printf '%s=%s\n' "$key" "$h" >> "$OVR"
+                else
+                    printf '%s\n' "$key" >> "$ADDED"
+                fi &&
+                    "$RP" -n "$key" true 2>/dev/null
+            fi
+            [ "$(getprop "$key")" = true ] &&
+                echo "guest_props: $key=true for the session (experimental One UI 9.5 on One UI 8: camera off)" ||
+                echo "!!! guest_props: could not set $key; the guest's camera stack may still call One UI 8's cameraserver"
+        fi
+    fi
+    # oneui8test13: One UI 9.5's SurfaceFlinger takes the panel's base density from ro.sf.init.lcd_density
+    # alone ("ro.sf.init.lcd_density must be defined as a build property"), and without it falls back to 213:
+    # the S22 on One UI 8 (test11 3d35a984, e7d51e44: "init=1080x2340 213dpi", sw811dp, a tablet layout with
+    # tiny text) and the Z Fold7 (080a3fee). One UI 8 there sets no such prop. One UI's own base for the
+    # session: ro.sf.lcd_density, else the density of One UI's main display scaled to the panel's full width
+    # (its mBaseDisplayInfo, captured by the switch). Removed on return. ONEOS_GUEST_INIT_DENSITY=0 leaves it.
+    key=ro.sf.init.lcd_density
+    if grep -q '^ro.build.version.oneui=' "$ROOTFS/system/build.prop" 2>/dev/null && [ -z "$(getprop "$key")" ] &&
+       [ "${ONEOS_GUEST_INIT_DENSITY:-1}" = 1 ]; then
+        idn=$(getprop ro.sf.lcd_density); ids="One UI's ro.sf.lcd_density"
+        case "$idn" in ''|*[!0-9]*)
+            idb=$(grep -m1 'mBaseDisplayInfo=DisplayInfo{' "$STAGE/display_host.txt" 2>/dev/null)
+            idd=$(printf '%s\n' "$idb" | sed -n 's/.* density \([0-9][0-9]*\)[ ,].*/\1/p' | head -n 1)
+            idw=$(printf '%s\n' "$idb" | sed -n 's/.* real \([0-9][0-9]*\) x [0-9]*.*/\1/p' | head -n 1)
+            idp=$(cut -d' ' -f1 "$STAGE/host_panel_size" 2>/dev/null)
+            case "$idd:$idw:$idp" in
+                *[!0-9:]*|:*|*::*|*:) idn="" ;;
+                *) idn=$(( (idd * idp + idw / 2) / idw )); ids="One UI's display density $idd at $idw of $idp px" ;;
+            esac ;;
+        esac
+        if [ -n "$idn" ] && [ "$idn" -ge 120 ] && [ "$idn" -le 800 ]; then
+            printf '%s\n' "$key" >> "$ADDED" && "$RP" -n "$key" "$idn" 2>/dev/null &&
+                echo "guest_props: $key=$idn for the session (One UI image; this phone sets none: $ids)"
+        else
+            echo "!!! guest_props: no $key on this phone and no base density read; One UI 9.5 will run at 213 dpi"
+        fi
     fi
     # The platform's minor SDK version (Build.VERSION.SDK_INT_FULL, read from
     # ro.build.version.sdk_full). One UI 8.5 says 36.1 (A07/A15/A17 probes,
@@ -1728,6 +2017,17 @@ ro.miui.backdrop_sampling_enabled=true"
     esac
     oneui_image_model="${ONEOS_ONEUI_IMAGE_MODEL:-1}"
     oneui_version_props="ro.build.version.oneui ro.build.version.sem ro.build.version.sem_platform_int"
+    # One UI 9.5 on a One UI 8 phone (S22 oneui8test7 b58434c4, A35 oneui8test3 6435d4fd): SystemUI's
+    # QpRune.QUICK_PANEL_COMPOSE is Build.VERSION.SEM_PLATFORM_INT > 170000, read from ro.build.version.sep
+    # (One UI 8: 170000). Off, Dependency left out SecQSPanelComposeAdapter while SecShadeControllerImpl
+    # still asks for it: "Unsupported dependency class ...SecQSPanelComposeAdapter", SystemUI died at every
+    # start (no navigation bar, setup stuck at the fingerprint page). The image's sep (180500) for the
+    # session when the phone's is below One UI 9's 180000; One UI 9 phones keep theirs.
+    hsep=$(getprop ro.build.version.sep)
+    case "$hsep" in
+        ""|*[!0-9]*) ;;
+        *) [ "$hsep" -lt 180000 ] && oneui_version_props="$oneui_version_props ro.build.version.sep" ;;
+    esac
     if [ "${ONEOS_PROFILE:-}" = f8 ] && [ "${ONEOS_GUEST_FORM:-}" = fold ] &&
        grep -qx 'ro.build.PDA=S948BXXU6ZZKN' "$ROOTFS/system/build.prop" 2>/dev/null; then
         # Build.VERSION.SEM_PLATFORM_INT and One UI Home read sep, not sem.

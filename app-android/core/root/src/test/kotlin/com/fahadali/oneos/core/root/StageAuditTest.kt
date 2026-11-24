@@ -21,6 +21,28 @@ class StageAuditTest {
         assertTrue("audit problems:\n${p.joinToString("\n")}", p.isEmpty())
     }
 
+    /**
+     * Tester builds (-Poneos.a17OnA16=true): app/build.gradle.kts ships a copy with the one line ONEOS_A17_ON_A16=1.
+     * That copy passes the same audit, and its extra pairs are exactly the ones Profiles.withOneUi95OnA16 adds.
+     */
+    @Test
+    fun testerCopyPassesTheAuditAndOffersTheTesterProfiles() {
+        assertEquals(1, Regex("""(?m)^ONEOS_A17_ON_A16=0$""").findAll(script).count())
+        assertEquals(0, Regex("""(?m)^ONEOS_A17_ON_A16=1$""").findAll(script).count())
+        val tester = script.replace("\nONEOS_A17_ON_A16=0\n", "\nONEOS_A17_ON_A16=1\n")
+        val p = StageAudit.audit(tester)
+        assertTrue("audit problems:\n${p.joinToString("\n")}", p.isEmpty())
+        val listed = Regex("""(?m)^A17_ON_A16_PROFILES="([^"]*)"$""").find(script)!!.groupValues[1].split(' ').toSet()
+        val stable = Profiles.STABLE.associateBy { it.id }
+        val added = Profiles.withOneUi95OnA16(Profiles.STABLE).flatMap { pr ->
+            pr.choices.filter { c -> stable.getValue(pr.id).choices.none { it == c } }.map { Triple(pr.id, it.imageId, it.packageSetId) }
+        }
+        assertEquals(added.map { it.first }.toSet(), listed)
+        assertTrue(added.all { it.second == Images.ID_ONEUI95 && it.third == PackageSets.ID_ONEUI95_A16 })
+        assertTrue(script.contains("        *) a17_on_a16_set \"\$1\" \"\$2\" ;;\n"))
+        assertTrue(script.contains("    [ \"\$ONEOS_A17_ON_A16\" = 1 ] && [ \"\$2\" = oneui95-s948b ] && in_list \"\$1\" \"\$A17_ON_A16_PROFILES\" || return 1\n    echo oneui95-a16\n"))
+    }
+
     @Test
     fun selfUpdateGetsNoMoreThanItsOwnInstall() {
         fun bad(from: String, to: String) {
@@ -275,11 +297,12 @@ class StageAuditTest {
         // SET_COMMON and its own files.
         assertTrue(PackageSets.X9U_IN_1105_SULTRA.names.containsAll(common))
         assertEquals(
-            setOf("oplus-framework_patched.jar", "cellbroadcast_payload.img", "framework_patched.jar", "telephony-common_patched.jar", "libcamera_client_patched.so", "samcam.tar", PackageSets.THEME_STORE_APK, PackageSets.ODM_AI, "ColorPanoramicSystemUI.apk", "samcam_a.tar", "OplusGestureUI_patched.apk", "OplusGestureUI_patched.apk.src_sha256"), // 0.4.97: + wallpaper AOD SystemUI; 0.5.20 r3: + samcam_a.tar; 0.5.32 r8: + raise to wake
+            setOf("framework_patched_oneui95.jar", "libcamera_client_patched_oneui95.so", "oplus-framework_patched.jar", "cellbroadcast_payload.img", "framework_patched.jar", "telephony-common_patched.jar", "libcamera_client_patched.so", "samcam.tar", PackageSets.THEME_STORE_APK, PackageSets.ODM_AI, "ColorPanoramicSystemUI.apk", "samcam_a.tar", "OplusGestureUI_patched.apk", "OplusGestureUI_patched.apk.src_sha256"), // 0.4.97: + wallpaper AOD SystemUI; 0.5.20 r3: + samcam_a.tar; 0.5.32 r8: + raise to wake
             PackageSets.X9U_IN_1105_SULTRA.names.toSet() - common.toSet(),
         )
         // 0.4.59: the bar Pixel sets add double tap to sleep (their own SystemUI and launcher) to SET_PIXEL.
-        assertEquals(PackageSets.PIXEL_SULTRA.names.toSet() - setOf("OneOSPixelSystemUI.apk", "OneOSPixelLauncher.apk"),
+        assertEquals(PackageSets.PIXEL_SULTRA.names.toSet() - setOf("OneOSPixelSystemUI.apk", "OneOSPixelLauncher.apk",
+                "framework_patched_oneui95.jar", "libcamera_client_patched_oneui95.so"),
             shVar("SET_PIXEL").split(' ').toSet())
         val setFiles = Regex("""^\s+([a-z0-9-]+)\) echo "\${'$'}(SET_[A-Z]+)([^"]*)" ;;$""", RegexOption.MULTILINE)
             .findAll(script).associate { it.groupValues[1] to (shVar(it.groupValues[2]).split(' ') + it.groupValues[3].split(' ').filter { n -> n.isNotEmpty() }) }
@@ -292,7 +315,7 @@ class StageAuditTest {
         val exec = Regex("""^\s+(\S+)\) echo 0755 ;;$""", RegexOption.MULTILINE).find(function("file_mode"))!!.groupValues[1].split('|')
         fun mode(n: String) = if (exec.any { glob(it, n) }) "0755" else "0644"
         for (set in PackageSets.ALL) for (f in set.files) assertEquals("${set.id} ${f.name}", f.mode, mode(f.name))
-        val notExecutable = setOf("guest_zygisk.so", "guest_vector.bundle", "guest_manager.apk", "oneos_boot_icon.png", "OneOSBootStatus.dex", "host_installd.txt", "OneOSEdmStub.dex", "OneOSOverlayDimen.dex", "OneOSFold8Geometry.dex")
+        val notExecutable = setOf("guest_zygisk.so", "guest_vector.bundle", "guest_manager.apk", "oneos_boot_icon.png", "OneOSBootStatus.dex", "host_installd.txt", "OneOSEdmStub.dex", "OneOSOverlayDimen.dex", "OneOSPixelCorners.apk", "OneOSFold8Geometry.dex", "OneOSGalleryStub.apk", "OneOSRcdCorners.apk")
         for (n in RootScript.SCRIPTS) assertEquals(n, if (n in notExecutable) "0644" else "0755", mode(n))
         // session.env values: what root accepts is what the app generates (StageScriptTest runs it).
         for (p in enabled) SessionEnv.generate(p)

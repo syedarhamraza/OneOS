@@ -92,8 +92,9 @@ object Plain {
             else -> "the Galaxy " + names.dropLast(1).joinToString(", ") + " and " + names.last()
         }
         if ("OneOS works on $list.".length <= PlainMessage.MAX_LINE) return list
-        val families = names.map { n -> listOf("Z Fold", "Z Flip").firstOrNull { n.startsWith(it) } ?: n.take(1) }.distinct()
-        return "${names.size} Galaxy phones so far: ${families.dropLast(1).joinToString(", ")} and ${families.last()} models; the README lists them"
+        val families = names.map { n -> listOf("Z Fold", "Z Flip", "Tab").firstOrNull { n.startsWith(it) } ?: n.take(1) }.distinct()
+        val kind = if ("Tab" in families) "phones and tablets" else "phones"
+        return "${names.size} Galaxy $kind so far: ${families.dropLast(1).joinToString(", ")} and ${families.last()} models; the README lists them"
     }
 
     /** [of] with the facts read from [report] and the phone's [facts]. */
@@ -155,7 +156,10 @@ object Plain {
                 )
                 else -> m("This phone isn't supported yet", "OneOS works on ${phoneList(profiles)}.", FixAction.SEND_PHONE_DETAILS)
             }
-            SwitchGates.ID_ANDROID -> if (r == SwitchGates.R_ANDROID_OLDER) {
+            // Tester build only (Experimental.a17OnA16): One UI 9.5 next to One UI 8, ticked at Switch.
+            SwitchGates.ID_ANDROID -> if (r == SwitchGates.R_ANDROID_EXPERIMENTAL) {
+                m("Experimental test build", SwitchGates.A17_ON_A16_ACK, FixAction.ACKNOWLEDGE)
+            } else if (r == SwitchGates.R_ANDROID_OLDER) {
                 // Every system of this phone is for a newer Android than its One UI: nothing to choose.
                 val want = (image?.sdk ?: phone?.choices?.mapNotNull { Images.byId(it.imageId)?.sdk }?.minOrNull())
                     ?.let { "Android ${AndroidRelease.name(it)}" } ?: "a newer Android"
@@ -273,6 +277,17 @@ object Plain {
                 "Its software is too old. If the screen stays black, One UI comes back by itself. Then share the " +
                     "session logs from Settings › Last session.",
                 FixAction.ACKNOWLEDGE,
+            )
+            Profiles.ID_NOTE_TABLET -> m(
+                "First runs on a Galaxy Tab",
+                "ColorOS 17 for tablets is new (testing). If the screen stays black, One UI comes back by itself. " +
+                    "Then share the session logs.",
+                FixAction.NONE,
+            )
+            Profiles.ID_NOTE_FOLD4_ISSUES -> m(
+                "Known issues on this phone",
+                "Camera does not work, cover screen brightness is fixed and dim, and the phone may warm up.",
+                FixAction.NONE,
             )
             SwitchGates.ID_LOGS -> m(
                 "Last session's logs aren't read yet",
