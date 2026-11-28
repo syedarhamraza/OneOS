@@ -253,7 +253,11 @@ data class ReturnOutcome(
             OutcomeKind.USER_RETURN -> "You held Volume Up+Down${after()}; OneOS returned to One UI."
             OutcomeKind.APP_RETURN -> "You tapped Back to One UI in $system${after()}; OneOS returned to One UI."
             OutcomeKind.GUEST_REBOOT -> "$sys asked for a restart${after()} (Restart in its power menu, or a crash); OneOS returned to One UI."
-            OutcomeKind.GUEST_SHUTDOWN -> "$sys asked to power off${after()} (power menu, low battery or heat); the phone powered off."
+            OutcomeKind.GUEST_SHUTDOWN -> if (line?.contains("'asleep:shutdown'") == true) {
+                "$sys asked to power off${after()} with its screen off; OneOS returned to One UI and kept the phone on."
+            } else {
+                "$sys asked to power off${after()} (power menu, low battery or heat); the phone powered off."
+            }
             OutcomeKind.GUEST_DEAD -> "$sys's system stopped${after()}; OneOS returned to One UI by itself."
             OutcomeKind.BLACK_SCREEN -> "The screen stayed black${after()}; OneOS returned to One UI by itself."
             OutcomeKind.SESSION_LIMIT -> "The session reached its time limit${after()}."
@@ -284,6 +288,24 @@ object ReturnOutcomes {
     private const val MODULES_FAILED = "Guest module installation failed"
     private const val SOFT_REBOOT_FAILED = "soft reboot failed, returning to One UI"
     private const val SESSION_HEADER = "=== OneOS session "
+
+    /** The boot reason shown when the phone has not restarted since the session started. */
+    const val NO_RESTART = "none (no restart since the session started)"
+
+    /**
+     * `sys.boot.reason` from `boot/reason.txt`, or [NO_RESTART] when the phone's current boot began before
+     * the session (its first `persist.sys.boot.reason.history` entry ends in that boot's epoch second;
+     * `stage/current.json` "epoch" is the session's start). 0.5.49: in-place returns showed the reason of a
+     * restart from the day before ("reboot,lpm", "bootloader"), read as failed returns.
+     */
+    fun currentBootReason(reasonTxt: String?, currentJson: String?): String? {
+        val lines = reasonTxt?.lineSequence() ?: return null
+        val reason = lines.firstOrNull { it.startsWith("sys.boot.reason=") }?.removePrefix("sys.boot.reason=")
+        val bootAt = lines.firstOrNull { it.startsWith("persist.sys.boot.reason.history=") }
+            ?.substringAfterLast(',')?.trim()?.toLongOrNull()
+        val sessionAt = currentJson?.let { Regex("\"epoch\":\\s*(\\d+)").find(it)?.groupValues?.get(1)?.toLongOrNull() }
+        return if (bootAt != null && sessionAt != null && bootAt < sessionAt) NO_RESTART else reason
+    }
     private const val LAUNCH_HEADER = "=== OneOS app launch "
 
     /** The part of an appended log after its last [header] line (all of it when there is none). */
@@ -317,7 +339,8 @@ object ReturnOutcomes {
                     req.startsWith("keys") -> OutcomeKind.USER_RETURN
                     // The guest's OneOS app (Back to One UI): app:app or app:tile.
                     req.startsWith("app:") -> OutcomeKind.APP_RETURN
-                    req.startsWith("shutdown") -> OutcomeKind.GUEST_SHUTDOWN
+                    // 0.5.51: asleep:shutdown, a shutdown asked with the guest's screen off: the phone stayed on.
+                    req.startsWith("shutdown") || req.startsWith("asleep:shutdown") -> OutcomeKind.GUEST_SHUTDOWN
                     else -> OutcomeKind.GUEST_REBOOT
                 }
                 return ReturnOutcome(kind, t, l.trim(), reason)
@@ -331,7 +354,7 @@ object ReturnOutcomes {
         }
         return when {
             reason?.startsWith("shutdown,oneos-guest-shutdown") == true -> ReturnOutcome(OutcomeKind.GUEST_SHUTDOWN, null, null, reason)
-            reason != null && !reason.contains("oneos") -> ReturnOutcome(OutcomeKind.HARD_RESET, null, null, reason)
+            reason != null && reason != NO_RESTART && !reason.contains("oneos") -> ReturnOutcome(OutcomeKind.HARD_RESET, null, null, reason)
             else -> ReturnOutcome(OutcomeKind.UNKNOWN, null, null, reason)
         }
     }

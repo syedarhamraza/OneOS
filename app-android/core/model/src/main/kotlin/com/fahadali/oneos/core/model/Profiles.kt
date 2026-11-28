@@ -125,8 +125,10 @@ object Profiles {
     const val ID_TAB_S12_ULTRA = "tab-s12-ultra"
     const val ID_TAB_S9_FE_PLUS = "tab-s9-fe-plus"
     const val ID_TAB_S9_FE = "tab-s9-fe"
+    const val ID_TAB_S9_FE_5G = "tab-s9-fe-5g"
     const val ID_TAB_S9_ULTRA = "tab-s9-ultra"
     const val ID_TAB_S11 = "tab-s11"
+    const val ID_TAB_S11_ULTRA = "tab-s11-ultra"
     const val ID_S_ULTRA_8550 = "s-ultra-8550"
     const val ID_FLIP6 = "flip6"
     const val ID_S_9945 = "s-9945"
@@ -154,6 +156,7 @@ object Profiles {
     const val ID_S_9925 = "s-9925"
     const val ID_A16_MTK = "a16-mtk"
     const val ID_S_8550_JP = "s-8550-jp"
+    const val ID_S_8750_JP = "s-8750-jp"
     const val ID_M35 = "m35"
     const val ID_M36 = "m36"
     const val ID_A15_5G = "a15-5g"
@@ -707,7 +710,8 @@ object Profiles {
         codename = "b5q",
         socModel = "SM8550",
         form = FormFactor.FLIP,
-        choices = listOf(X9U_IN_1105_TESTED, PIXEL9_CHOICE, INFINITYX_TESTED, LINEAGE_CHOICE, HYPEROS_CHOICE, HYPEROS_HK_CHOICE) + ONEUI95_CHOICE,
+        // 0.5.46 (owner): OriginOS too, as on the S23s of the same chip (untested; the main screen only, as a bar phone).
+        choices = listOf(X9U_IN_1105_TESTED, PIXEL9_CHOICE, INFINITYX_TESTED, LINEAGE_CHOICE, HYPEROS_CHOICE, HYPEROS_HK_CHOICE, ORIGINOS_CHOICE) + ONEUI95_CHOICE,
         notes = listOf(EXPECT_NO_START),
     ))
 
@@ -815,7 +819,8 @@ object Profiles {
         codename = "q5q",
         socModel = "SM8550",
         form = FormFactor.FOLD,
-        choices = listOf(ImageChoice(Images.ID_FIND_N6, PackageSets.ID_N6_F8U, tested = false), INFINITYX_CHOICE, LINEAGE_CHOICE) + ONEUI95_CHOICE,
+        // 0.5.47 (owner): OriginOS too, as on the Z Flip5 and the S23s of the same chip (untested).
+        choices = listOf(ImageChoice(Images.ID_FIND_N6, PackageSets.ID_N6_F8U, tested = false), INFINITYX_CHOICE, LINEAGE_CHOICE, ORIGINOS_CHOICE) + ONEUI95_CHOICE,
         notes = listOf(olderVendor("33 (Android 13)", "5.15")),
     ))
 
@@ -1341,6 +1346,14 @@ object Profiles {
     val S_8550_JP = withPixelOs(S_8550.copy(id = ID_S_8550_JP, label = "Galaxy S23 (au)", modelPrefix = "SCG19", codename = "SCG19"))
 
     /**
+     * The au Galaxy S25, from 0.5.51: findings of 2026-11-27 (SCG31, ro.product.device SCG31, vendor device pa1q,
+     * SM8750, One UI 9.0, Android 17 build CP2A.260605.016, vendor API 202404, one 1080 x 2340 panel on port 147,
+     * density 480, KernelSU; its installd table is the 85 methods of host_installd.txt). The [S_8750]'s systems and
+     * note, untested.
+     */
+    val S_8750_JP = S_8750.copy(id = ID_S_8750_JP, label = "Galaxy S25 (au)", modelPrefix = "SCG31", codename = "SCG31")
+
+    /**
      * Galaxy M35 5G, from 0.4.95: findings of 2026-11-11 (SM-M356B, m35x, s5e8835 Exynos 1380, One UI 9.0,
      * Android 17, KernelSU). The [A35]'s chip and vendor, so the [A26]'s choices and notes, as the A35 5G
      * has them; untested.
@@ -1401,13 +1414,13 @@ object Profiles {
     /** Galaxy Tab S9 (Wi-Fi), from a probe report of 2026-11-22 (SM-X710, gts9wifi, Snapdragon 8 Gen 2, One UI 9.0). */
     val TAB_S9 = PhoneProfile(
         id = ID_TAB_S9, label = "Galaxy Tab S9", modelPrefix = "SM-X710", codename = "gts9wifi", socModel = "SM8550",
-        form = FormFactor.BAR, choices = listOf(OXYGEN17_PAD_CHOICE), notes = listOf(TABLET),
+        form = FormFactor.BAR, choices = listOf(OXYGEN17_PAD_CHOICE, ONEUI95_CHOICE), notes = listOf(TABLET),
     )
 
     /** Galaxy Tab S10 FE 5G, from a probe report of 2026-11-18 (SM-X526B, gts10fe, Exynos 1580, One UI 9.0). */
     val TAB_S10_FE = PhoneProfile(
         id = ID_TAB_S10_FE, label = "Galaxy Tab S10 FE 5G", modelPrefix = "SM-X526", codename = "gts10fe", socModel = "s5e8855",
-        form = FormFactor.BAR, choices = listOf(OXYGEN17_PAD_CHOICE), notes = listOf(TABLET, EXYNOS),
+        form = FormFactor.BAR, choices = listOf(OXYGEN17_PAD_CHOICE, ONEUI95_CHOICE), notes = listOf(TABLET, EXYNOS),
     )
 
     /** Galaxy Tab S10 FE (Wi-Fi, SM-X520, gts10fewifi): the 5G model's chip and system. */
@@ -1416,17 +1429,38 @@ object Profiles {
     /** SM-X940 (gts12uwifi), from a probe report of 2026-11-23: MediaTek MT6993, One UI 9.0. */
     val TAB_S12_ULTRA = PhoneProfile(
         id = ID_TAB_S12_ULTRA, label = "Galaxy Tab S12 Ultra", modelPrefix = "SM-X940", codename = "gts12uwifi", socModel = "MT6993",
-        form = FormFactor.BAR, choices = listOf(OXYGEN17_PAD_CHOICE), notes = listOf(TABLET, MEDIATEK),
+        form = FormFactor.BAR, choices = listOf(OXYGEN17_PAD_CHOICE, ONEUI95_CHOICE), notes = listOf(TABLET, MEDIATEK),
     )
 
     /** Galaxy Tab S9 FE+ (Wi-Fi), from a probe report of 2026-11-24 (SM-X610, gts9fepwifi, Exynos 1380, One UI 9.0). */
     val TAB_S9_FE_PLUS = PhoneProfile(
         id = ID_TAB_S9_FE_PLUS, label = "Galaxy Tab S9 FE+", modelPrefix = "SM-X610", codename = "gts9fepwifi", socModel = "s5e8835",
-        form = FormFactor.BAR, choices = listOf(OXYGEN17_PAD_CHOICE), notes = listOf(TABLET, EXYNOS),
+        form = FormFactor.BAR, choices = listOf(OXYGEN17_PAD_CHOICE, ONEUI95_CHOICE), notes = listOf(TABLET, EXYNOS),
     )
 
-    /** Galaxy Tab S9 FE (Wi-Fi, SM-X510, gts9fewifi): the FE+'s chip and system (findings of 2026-11-08). */
-    val TAB_S9_FE = TAB_S9_FE_PLUS.copy(id = ID_TAB_S9_FE, label = "Galaxy Tab S9 FE", modelPrefix = "SM-X510", codename = "gts9fewifi")
+    /**
+     * Galaxy Tab S9 FE (Wi-Fi, SM-X510, gts9fewifi; pull request #371, asarr22): live device inspection (s5e8835
+     * Exynos 1380 like the Galaxy A26/A35/A54/M35/M36, vendor API 33 and kernel 5.15, one 1440 x 2304 90 Hz LCD
+     * panel at density 280 with brightnessMaximum 1.1764706 and backlight max 300, Himax TDDI touch and sec_e-pen,
+     * HIDL composer 2.4 and HIDL audio HAL, Mali-G68, no SVE or SME, Wi-Fi only with ro.radio.noril=yes, KernelSU).
+     * Takes OxygenOS 17 for tablets and One UI 9.5 (owner, 2026-11-25), the tablet note and the A26's notes.
+     */
+    val TAB_S9_FE = A26.copy(
+        id = ID_TAB_S9_FE,
+        label = "Galaxy Tab S9 FE",
+        modelPrefix = "SM-X510",
+        codename = "gts9fewifi",
+        // Owner (2026-11-25): the tablet system and One UI 9.5 (what pull request #371 was for), none of the A26's phone systems.
+        choices = listOf(OXYGEN17_PAD_CHOICE, ONEUI95_CHOICE),
+        notes = listOf(TABLET) + A26.notes,
+    )
+
+    /**
+     * Galaxy Tab S9 FE 5G (SM-X516B/N, gts9fe), from a probe report of 2026-11-25 (findings-6d47aeba, SM-X516N on
+     * One UI 8.5, s5e8835): the Wi-Fi model's hardware with a modem; the same choices (owner, 2026-11-25). The Tab
+     * S9 FE scripts key on SM-X51* or this id too (testing).
+     */
+    val TAB_S9_FE_5G = TAB_S9_FE.copy(id = ID_TAB_S9_FE_5G, label = "Galaxy Tab S9 FE 5G", modelPrefix = "SM-X516", codename = "gts9fe")
 
     /** Galaxy Tab S9 Ultra (Wi-Fi, SM-X910, gts9uwifi): the Tab S9's chip (findings of 2026-11-11 and 11-12; 0.5.43, testing). */
     val TAB_S9_ULTRA = TAB_S9.copy(id = ID_TAB_S9_ULTRA, label = "Galaxy Tab S9 Ultra", modelPrefix = "SM-X910", codename = "gts9uwifi")
@@ -1434,11 +1468,20 @@ object Profiles {
     /** Galaxy Tab S11 (Wi-Fi), from a probe report of 2026-11-24 (SM-X730, gts11wifi, Dimensity 9400+ MT6991, One UI 9.0; 0.5.43, testing). */
     val TAB_S11 = PhoneProfile(
         id = ID_TAB_S11, label = "Galaxy Tab S11", modelPrefix = "SM-X730", codename = "gts11wifi", socModel = "MT6991",
-        form = FormFactor.BAR, choices = listOf(OXYGEN17_PAD_CHOICE), notes = listOf(TABLET, MEDIATEK),
+        form = FormFactor.BAR, choices = listOf(OXYGEN17_PAD_CHOICE, ONEUI95_CHOICE), notes = listOf(TABLET, MEDIATEK),
     )
 
-    /** The Galaxy Tab profiles: tablet systems only, never One UI 9.5 on One UI 8 ([withOneUi95OnA16]). */
-    val TABLETS: List<PhoneProfile> = listOf(TAB_S9, TAB_S10_FE, TAB_S10_FE_WIFI, TAB_S12_ULTRA, TAB_S9_FE_PLUS, TAB_S9_FE, TAB_S9_ULTRA, TAB_S11)
+    /**
+     * Galaxy Tab S11 Ultra (Wi-Fi, SM-X930, gts11uwifi), from a probe report of 2026-11-25 (findings-37123bcf, Dimensity
+     * 9400+ MT6991, One UI 9.0): the Tab S11's chip and choices (owner; testing).
+     */
+    val TAB_S11_ULTRA = TAB_S11.copy(id = ID_TAB_S11_ULTRA, label = "Galaxy Tab S11 Ultra", modelPrefix = "SM-X930", codename = "gts11uwifi")
+
+    /**
+     * The Galaxy Tab profiles: the tablet system and, since 0.5.48 (owner), One UI 9.5 on every Tab (its own model kept,
+     * as on the Tab S9 FE); never the tester build's One UI 9.5 on One UI 8 set ([withOneUi95OnA16]).
+     */
+    val TABLETS: List<PhoneProfile> = listOf(TAB_S9, TAB_S10_FE, TAB_S10_FE_WIFI, TAB_S12_ULTRA, TAB_S9_FE_PLUS, TAB_S9_FE, TAB_S9_FE_5G, TAB_S9_ULTRA, TAB_S11, TAB_S11_ULTRA)
 
     /** Every profile with the choices of a normal build ([BUILT_IN] unless this is a tester build). */
     val STABLE: List<PhoneProfile> = listOf(
@@ -1448,7 +1491,8 @@ object Profiles {
         S_ULTRA_8550, FLIP6, S_9945, S_EDGE_8750, S_FE_9945, A26, A17, A16, S_9965, A16_4G, A16_S166, A35, A54, A27, A17_5G, FLIP7_FE,
         A06, A07_5G, A15, A24, A25, A33, A34, A53, E55, S_FE_9925, S_FE_8450, S_PLUS_9925, S_ULTRA_9925, S_ULTRA_8450,
         A55, S25_FE, S_8450, M55S, S_ULTRA_8450_JP, S_PLUS_9945, S_ULTRA_8550_JP, S_9925, A16_MTK, S_8550_JP, M35, M36, A15_5G, S_PLUS_8650,
-        S26_FE, S_PLUS_8450, TAB_S9, TAB_S10_FE, TAB_S10_FE_WIFI, TAB_S12_ULTRA, TAB_S9_FE_PLUS, TAB_S9_FE, TAB_S9_ULTRA, TAB_S11,
+        S26_FE, S_PLUS_8450, TAB_S9, TAB_S10_FE, TAB_S10_FE_WIFI, TAB_S12_ULTRA, TAB_S9_FE_PLUS, TAB_S9_FE, TAB_S9_FE_5G, TAB_S9_ULTRA, TAB_S11, TAB_S11_ULTRA,
+        S_8750_JP,
     )
 
     /**
@@ -1472,8 +1516,34 @@ object Profiles {
         }
     }
 
-    /** The profiles this build switches: [STABLE], with [withOneUi95OnA16] in a tester build (read once, at first use). */
-    val BUILT_IN: List<PhoneProfile> = if (Experimental.a17OnA16) withOneUi95OnA16(STABLE) else STABLE
+    /** ColorOS 17 Find X9 Ultra IN on One UI 8 (0.5.51) with its One UI 8 set; untested. */
+    private val X9U_IN_1105_A16_CHOICE = ImageChoice(Images.ID_FIND_X9U_IN_1105, PackageSets.ID_X9U_IN_1105_A16, tested = false)
+
+    /** The S22s held on One UI 8 that get ColorOS 17 with its One UI 8 set (root's COLOROS_A16_PROFILES). */
+    val COLOROS_A16_PROFILES: Set<String> = setOf(ID_S_9925, ID_S_8450, ID_S_PLUS_9925, ID_S_PLUS_8450, ID_S_ULTRA_9925, ID_S_ULTRA_8450, ID_S_ULTRA_8450_JP)
+
+    /**
+     * 0.5.51 (owner: "Since S22 can boot One UI 9.5 now, lets try ColorOS 17 for them"): the S22s also offer ColorOS 17
+     * (Find X9 Ultra IN) with its One UI 8 set ([PackageSets.X9U_IN_1105_A16]), right after One UI 9.5; a phone
+     * that already lists that image keeps its own choice.
+     */
+    fun withColorOsOnA16(profiles: List<PhoneProfile>): List<PhoneProfile> = profiles.map { p ->
+        if (!p.enabled || p.id !in COLOROS_A16_PROFILES || p.choices.any { it.imageId == Images.ID_FIND_X9U_IN_1105 }) p
+        else {
+            val at = p.choices.indexOfFirst { it.imageId == Images.ID_ONEUI95 }.let { if (it < 0) p.choices.size else it + 1 }
+            p.copy(choices = p.choices.subList(0, at) + X9U_IN_1105_A16_CHOICE + p.choices.subList(at, p.choices.size))
+        }
+    }
+
+    /**
+     * The profiles this build switches: [STABLE], with [withOneUi95OnA16] in an a17OnA16 build, and [withColorOsOnA16]
+     * as well in the ColorOS testing APK (Experimental.colorOsOnA16). Read once, at first use.
+     */
+    val BUILT_IN: List<PhoneProfile> = when {
+        !Experimental.a17OnA16 -> STABLE
+        Experimental.colorOsOnA16 -> withColorOsOnA16(withOneUi95OnA16(STABLE))
+        else -> withOneUi95OnA16(STABLE)
+    }
 
     /**
      * PixelOS 17 on every bar phone on One UI 9 (0.5.35, owner: "it would work for all devices on 9.0"): the A36's

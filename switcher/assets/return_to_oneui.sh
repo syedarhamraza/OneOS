@@ -529,6 +529,13 @@ for t in tsp tsp1 tsp2; do
     fi
     rm -f "$f"
 done
+for t in tsp tsp1 tsp2; do
+    f=$S/data/oneos_himax_aot.$t
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    [ -w /sys/class/sec/$t/cmd ] && echo aot_enable,1 > /sys/class/sec/$t/cmd 2>/dev/null &&
+        echo "Touchscreen $t: restored Himax TDDI aot_enable,1 for One UI"
+    rm -f "$f"
+done
 rm -f /dev/oneos_dt2w_event* 2>/dev/null
 
 # One UI's protected state against the record the switch made (see
@@ -755,12 +762,14 @@ done
 # Inbound SMS (0.4.61): the session NOPs Samsung rild's queue branch and
 # bind-mounts the vendor library. Remove it before the stage-mount check below,
 # which would otherwise see /local/tmp/oneos/ in field 4 and reboot.
-# One UI 9.5 on One UI 8: the empty loopback ring buffer guest_prepare.sh pinned (only that one).
+# One UI 9.5 on One UI 8: the ring buffers guest_prepare.sh pinned (one per line; only these paths).
 if [ -f "$S/bpf_ringbuf.created" ]; then
-    RB=$(head -n 1 "$S/bpf_ringbuf.created")
-    case "$RB" in
-        /sys/fs/bpf/netd_shared/map_netd_loopback_access_ringbuf) "$S/oneos_bpf_ringbuf" remove "$RB" >>"$IPLOG" 2>&1 || rm -f "$RB" ;;
-    esac
+    while IFS= read -r RB; do
+        case "$RB" in
+            /sys/fs/bpf/netd_shared/map_netd_loopback_access_ringbuf|/sys/fs/bpf/netd_shared/map_netd_tcp_metrics_ringbuf)
+                "$S/oneos_bpf_ringbuf" remove "$RB" >>"$IPLOG" 2>&1 || rm -f "$RB" ;;
+        esac
+    done < "$S/bpf_ringbuf.created"
     rm -f "$S/bpf_ringbuf.created"
 fi
 # oneui8test13: the do-nothing netd socket-ops program guest_prepare.sh pinned (only that one): detached from
@@ -771,6 +780,14 @@ if [ -f "$S/bpf_sockops.created" ]; then
         /sys/fs/bpf/netd_shared/prog_netd_sockops_prog) "$S/oneos_bpf_ringbuf" sockops-remove "$SOP" >>"$IPLOG" 2>&1 || rm -f "$SOP" ;;
     esac
     rm -f "$S/bpf_sockops.created"
+fi
+# 0.5.44: the empty L4S map guest_prepare.sh pinned (only that one).
+if [ -f "$S/bpf_l4s.created" ]; then
+    L4S=$(head -n 1 "$S/bpf_l4s.created")
+    case "$L4S" in
+        /sys/fs/bpf/netd_shared/map_netd_l4s_accecn_enabled_map) "$S/oneos_bpf_ringbuf" remove "$L4S" >>"$IPLOG" 2>&1 || rm -f "$L4S" ;;
+    esac
+    rm -f "$S/bpf_l4s.created"
 fi
 /system/bin/sh "$S/libsec-ril-patch.sh" restore >>"$IPLOG" 2>&1 || \
     say "!!! inbound SMS: the vendor RIL patch was not removed; see return_inplace.log"

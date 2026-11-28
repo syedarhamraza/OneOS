@@ -885,7 +885,9 @@ add)
     # display, captured by the switch; the same scale guest_prepare.sh gives
     # the display configs of the other systems). 1000 = the Fold's own.
     bm=$(grep 'DisplayDeviceInfo{' "$STAGE/display_modes_host.log" 2>/dev/null | sed -n 's/.*brightnessMaximum \([0-9.]*\).*/\1/p' | head -n 1)
-    sc=$(awk -v m="$bm" 'BEGIN { if (m + 0 >= 1.5 && m + 0 <= 8) printf "%d", 5298.0394 / m + 0.5; else print 1000 }')
+    # The Galaxy Tab S9 FE's LCD (brightnessMaximum 1.176) is scaled from 1.0 (pull request #371); every other phone from 1.5.
+    case "${ONEOS_PROFILE:-}:$(getprop ro.product.model)" in tab-s9-fe:*|tab-s9-fe-5g:*|*:SM-X51*) bmlo=1.0 ;; *) bmlo=1.5 ;; esac
+    sc=$(awk -v m="$bm" -v lo="$bmlo" 'BEGIN { if (m + 0 >= lo + 0 && m + 0 <= 8) printf "%d", 5298.0394 / m + 0.5; else print 1000 }')
     sed -i '/^ro\.oneos\.panel_scale_milli=/d' "$NEW"
     echo "ro.oneos.panel_scale_milli=$sc" >> "$NEW"
     echo "guest_props: panel brightness scale $sc/1000 (One UI's brightnessMaximum ${bm:-unknown})"
@@ -978,7 +980,7 @@ add)
     # layer, apps rounding to the display's radius showed grey corners; on the A36 PixelOS's composer
     # takes the layer (composition DISPLAY_DECORATION, no GPU composition, live 11-22).
     case "$(getprop ro.product.model)" in
-        SM-A*|SM-M*)
+        SM-A*|SM-M*|SM-X51*)
             if [ -f "$STAGE/oem/overlay/OneOSPixelCorners.apk" ] && [ "${ONEOS_GUEST_SCREEN_DECOR:-}" != 0 ]; then
                 echo "guest_props: screen decorations kept on (PixelOS's corners at this phone's radius)"
             elif [ "${ONEOS_GUEST_SCREEN_DECOR:-0}" != 1 ]; then
@@ -987,6 +989,16 @@ add)
                 echo "guest_props: debug.disable_screen_decorations=true for the session (mid-range Galaxy: the decor layer went to the GPU every frame)"
             fi ;;
     esac
+    # Wi-Fi-only Galaxy (Tab S9 FE SM-X510: ro.radio.noril=yes, ro.carrier=wifi-only): phone images ship
+    # ro.telephony.sim_slots.count=2 (OxygenOS 16); clear it to 0 for the session so telephony queries do not
+    # assume active SIM slots on a device with no modem.
+    if [ "$(getprop ro.radio.noril)" = yes ] || [ "$(getprop ro.radio.noril)" = true ] || [ "$(getprop ro.radio.noril)" = 1 ] || \
+       [ "$(getprop ro.carrier)" = wifi-only ]; then
+        if grep -q '^ro\.telephony\.sim_slots\.count=' "$NEW"; then
+            sed -i 's/^ro\.telephony\.sim_slots\.count=.*/ro.telephony.sim_slots.count=0/' "$NEW" &&
+                echo "guest_props: ro.telephony.sim_slots.count=0 for the session (Wi-Fi-only device)"
+        fi
+    fi
     # AppSearch isolated storage: Pixel sets ro.appsearch.feature.enable_isolated_storage=true,
     # and system_server's AppSearch then starts a protected VM through the
     # virtualization APEX, which is One UI's here (run 41: UnsatisfiedLinkError in
@@ -1128,7 +1140,8 @@ add)
     # 1.33x zoom. The base for the whole panel instead, for the session (One UI's back at the return): 450 x 1440
     # / 1080 = 600. Phones run at 1080 or less and folds are left alone. ONEOS_GUEST_QHD_BASE=0 leaves it.
     if { [ -e "$ROOTFS/system/system_ext/framework/miui-services.jar" ] || [ -e "$ROOTFS/system_ext/framework/miui-services.jar" ]; } &&
-       [ "${ONEOS_GUEST_FORM:-fold}" != fold ] && [ "${ONEOS_GUEST_QHD_BASE:-1}" = 1 ]; then
+       [ "${ONEOS_GUEST_FORM:-fold}" != fold ] && [ "${ONEOS_GUEST_QHD_BASE:-1}" = 1 ] &&
+       case "${ONEOS_PROFILE:-}:$(getprop ro.product.model)" in tab-s9-fe:*|tab-s9-fe-5g:*|*:SM-X51*) false ;; *) true ;; esac; then
         LD=ro.sf.lcd_density
         ld=$(getprop "$LD")
         # The width the guest runs the panel at. One UI's when One UI runs the whole panel. With One UI at FHD+
@@ -1436,6 +1449,20 @@ ro.miui.backdrop_sampling_enabled=true"
         echo "vendor.vivoconfigstore.ready=1" >> "$NEW"
         echo "guest_props: vendor.vivoconfigstore.ready=1 (no 550 ms wait per vivo feature lookup)"
     fi
+    # vivo's camera finds its phone's settings by ro.product.model.bbk (0.5.51, Fold5 OriginOS 03202cec): VivoCamera's
+    # FeatureConfig loads FeatureConfig_meat_<project>, and that property is vivo's vendor's, so with Samsung's vendor
+    # it read "unknown", the common config had no zoom table for the back camera and the camera closed at every
+    # start (configMeatZoomSceneConfig: moduleZoomConfig is null, photo|back). The image's own project
+    # (ro.product.system.device, PD2609 for the PD2609MA build) is given when the phone has none. ONEOS_GUEST_VIVO_BBK=0: off.
+    if [ -f "$ROOTFS/system/framework/vivo-services.jar" ] && [ "${ONEOS_GUEST_VIVO_BBK:-1}" = 1 ] &&
+       [ -z "$(getprop ro.product.model.bbk)" ]; then
+        bbk=$(sed -n 's/^ro\.product\.system\.device=//p' "$ROOTFS/system/build.prop" 2>/dev/null | tail -n 1 | tr -dc 'A-Za-z0-9_')
+        if [ -n "$bbk" ]; then
+            sed -i '/^ro\.product\.model\.bbk=/d' "$NEW"
+            echo "ro.product.model.bbk=$bbk" >> "$NEW"
+            echo "guest_props: ro.product.model.bbk=$bbk (vivo's camera settings for this build)"
+        fi
+    fi
     # The garbage collector the image's ART code was compiled for (0.4.60). An
     # image's boot image (system/framework/boot.art) and its apps' odex files
     # are built for one collector: CC, with read barriers, or CMC (userfaultfd),
@@ -1616,17 +1643,45 @@ ro.miui.backdrop_sampling_enabled=true"
         # 386 for 515) the icon sat a quarter too low after the scaling below.
         UPPI=$(awk 'match($0, /resolution=[0-9]+x[0-9]+/) { split(substr($0, RSTART + 11, RLENGTH - 11), a, "x"); if (a[1] + 0 <= w) next;
             w = a[1] + 0; if (match($0, /dpi=[0-9.]+/)) d = substr($0, RSTART + 4, RLENGTH - 4) + 0 } END { if (w && d >= 100) print d }' "$STAGE/display_modes_host.log" 2>/dev/null)
-        [ -n "$UPPI" ] && UDPI=$UPPI
-        fpl=$(echo "$UPOS $UDPI ${UMODE:-0} ${UPHYS:-0}" | awk '{ n = split($1, p, ","); dpi = $2; k = ($3 > 0 && $4 > 0) ? $3 / $4 : 1;
+        # Without the modes log the display line's dpi is the running mode's: back to the panel's by the two widths
+        # (vdcoolok's S25 Ultra 9dde4045, 0.5.50: 375.8 dpi scaled twice, the centre at 414 for 552).
+        if [ -n "$UPPI" ]; then UDPI=$UPPI
+        elif [ "${UMODE:-0}" -gt 0 ] 2>/dev/null && [ "${UPHYS:-0}" -gt 0 ] 2>/dev/null && [ -n "$UDPI" ]; then
+            UDPI=$(awk -v d="$UDPI" -v m="$UMODE" -v p="$UPHYS" 'BEGIN { printf "%.5f", d * p / m }')
+        fi
+        # OPPO's SystemUI zooms both props by its own stable/base display width ("1080P in 2k -> zoomIn", "2k in 2k
+        # -> do nothing"), so they are in the pixels of the width the GUEST runs the panel at, not One UI's: with
+        # One UI at FHD+ a Snapdragon Ultra or S25+ gives the guest the whole panel (vdcoolok's S25 Ultra at FHD+,
+        # 9dde4045: guest stableWidth = baseWidth = 1440, our 1080-scaled centre sat ~10 mm under the sensor; his
+        # pull request #152 used the panel's pixels), the Exynos S24+ runs it at One UI's width. The same choice as
+        # the HyperOS base density above: the last session's width (UI activator, data/oneos_guest_width) when it
+        # is one of the two, else the whole panel, on Exynos One UI's.
+        UGW=$UMODE
+        if [ "${UMODE:-0}" -gt 0 ] 2>/dev/null && [ "${UPHYS:-0}" -gt 0 ] 2>/dev/null && [ "$UMODE" != "$UPHYS" ]; then
+            ugw=$(head -c 8 "$STAGE/data/oneos_guest_width" 2>/dev/null | tr -dc 0-9)
+            [ -L "$STAGE/data/oneos_guest_width" ] && ugw=""
+            if [ -n "$ugw" ] && { [ "$ugw" = "$UMODE" ] || [ "$ugw" = "$UPHYS" ]; }; then UGW=$ugw
+            else case "$(getprop ro.board.platform)" in s5e*|exynos*|erd*) ;; *) UGW=$UPHYS ;; esac
+            fi
+        fi
+        fpl=$(echo "$UPOS $UDPI ${UGW:-0} ${UPHYS:-0}" | awk '{ n = split($1, p, ","); dpi = $2; k = ($3 > 0 && $4 > 0) ? $3 / $4 : 1;
             if (n < 6 || dpi < 100 || p[1] <= 0) exit; printf "%d", (p[1] + p[4] / 2) * dpi / 25.4 * k + 0.5 }')
-        fps=$(echo "${UMODE:-1080}" | awk '{ printf "%d", 196 * ($1 > 0 ? $1 : 1080) / 1080 + 0.5 }')
+        fps=$(echo "${UGW:-1080}" | awk '{ printf "%d", 196 * ($1 > 0 ? $1 : 1080) / 1080 + 0.5 }')
         if [ -n "$fpt" ] && [ -n "$fpl" ]; then
             for kv in "persist.vendor.fingerprint.sensor_type=$fpt" "persist.vendor.fingerprint.optical.iconlocation=$fpl" \
                       "persist.vendor.fingerprint.optical.iconsize=$fps"; do
                 drop_new "${kv%%=*}"
                 echo "$kv" >> "$NEW"
             done
-            echo "guest_props: OPPO fingerprint: $fpt sensor, icon centre ${fpl}px from the bottom, size $fps (from '$UPOS' at $UDPI dpi, panel ${UPHYS:-?} px wide running at ${UMODE:-?})"
+            echo "guest_props: OPPO fingerprint: $fpt sensor, icon centre ${fpl}px from the bottom, size $fps (from '$UPOS' at $UDPI dpi, panel ${UPHYS:-?} px wide, One UI at ${UMODE:-?}, guest at ${UGW:-?})"
+            # vdcoolok's fingerprint wave in ColorPanoramicSystemUI.apk (scripts/patch-coloros-fp-wave.py, made on the
+            # S25 Ultra): glyph first at the wake, the full wave over home after the unlock, no black dim layer. Only
+            # for ultrasonic sensors; optical ones keep ColorOS's own highlight flow. ONEOS_GUEST_FP_WAVE=0 turns it off.
+            drop_new ro.oneos.fp_wave
+            if [ "$fpt" = ultrasonic ] && [ "${ONEOS_GUEST_FP_WAVE:-1}" = 1 ]; then
+                echo "ro.oneos.fp_wave=1" >> "$NEW"
+                echo "guest_props: ro.oneos.fp_wave=1 (ColorOS fingerprint wave, ultrasonic sensor)"
+            fi
             # The panel lights the spot itself (local HBM, as One UI's fingerprint service reads it): ColorOS's
             # lock screen then keeps its brightness instead of its dim layer (patch-coloros-keyguard-lhbm.py).
             if [ "$fpt" = optical ] && [ -e /sys/class/lcd/panel/local_hbm ] &&
@@ -1637,6 +1692,29 @@ ro.miui.backdrop_sampling_enabled=true"
             fi
         else
             echo "guest_props: OPPO fingerprint: no in-display sensor known (features '${fpf}', position '${UPOS}', dpi '${UDPI}')"
+        fi
+    fi
+    # Infinity-X's keyguard fingerprint ring (SystemUI_glyph.apk, OneOSGlyphView from vdcoolok's pull request #152;
+    # owner 11-28: his fix for Infinity-X): its place as ten-thousandths of the panel's width and height, from this
+    # phone's own sensor position (sysfs: bottom margin, x offset, area height in mm, as guest_prepare.sh's
+    # OneOSUdfps reads it) at the panel's density; a 5 mm radius (his S25 Ultra ring, 98 px of 1440). Fractions,
+    # so the ring lands on the sensor at any resolution the guest runs at. No in-display sensor: no ring.
+    if grep -q '^ro\.infinity\.' "$ROOTFS/system/build.prop" 2>/dev/null; then
+        GPOS=$(head -n 1 /sys/class/fingerprint/fingerprint/position 2>/dev/null)
+        GLINE=$(grep 'type INTERNAL' "$STAGE/display_host.txt" 2>/dev/null | grep 'FLAG_ALLOWED_TO_BE_DEFAULT_DISPLAY' | head -n 1)
+        GWH=$(printf '%s\n' "$GLINE" | sed -n 's/.*physicalDisplayWidth=\([0-9]*\) physicalDisplayHeight=\([0-9]*\).*/\1 \2/p')
+        GDPI=$(awk 'match($0, /resolution=[0-9]+x[0-9]+/) { split(substr($0, RSTART + 11, RLENGTH - 11), a, "x"); if (a[1] + 0 <= w) next;
+            w = a[1] + 0; if (match($0, /dpi=[0-9.]+/)) d = substr($0, RSTART + 4, RLENGTH - 4) + 0 } END { if (w && d >= 100) print d }' "$STAGE/display_modes_host.log" 2>/dev/null)
+        GFR=$(echo "$GPOS $GWH $GDPI" | awk '{ n = split($1, p, ","); w = $2; h = $3; dpi = $4;
+            if (n < 6 || w < 100 || h < 100 || dpi < 100 || p[1] <= 0) exit; ppm = dpi / 25.4;
+            x = w / 2 + p[2] * ppm; y = h - (p[1] + p[4] / 2) * ppm; r = 5 * ppm;
+            if (x > 0 && x < w && y > 0 && y < h) printf "%d %d %d", x / w * 10000 + 0.5, y / h * 10000 + 0.5, r / w * 10000 + 0.5 }')
+        drop_new ro.oneos.fp_glyph
+        if [ -n "$GFR" ]; then
+            echo "ro.oneos.fp_glyph=$GFR" >> "$NEW"
+            echo "guest_props: ro.oneos.fp_glyph=$GFR (Infinity-X fingerprint ring, from '$GPOS', panel ${GWH:-?} at ${GDPI:-?} dpi)"
+        else
+            echo "guest_props: Infinity-X fingerprint ring left out (no in-display sensor known: '$GPOS', panel '${GWH}', dpi '${GDPI}')"
         fi
     fi
     # Hardware Codec2 components on Exynos (0.5.33+ S24 FE 97db2ff1: mediaserver64 queried
@@ -1783,6 +1861,25 @@ ro.miui.backdrop_sampling_enabled=true"
             g=$(cat "$ROOTFS"/system/build.prop "$GSE"/etc/build.prop \
                 "$GPR"/etc/build.prop "$ROOTFS"/my_*/build.prop "$ROOTFS"/mi_ext/etc/build.prop 2>/dev/null | sed -n "s/^$key=//p" | tail -n 1)
             h=$(getprop "$key")
+            # 0.5.49: an image without these keys (OriginOS: Fold5 6b332ef2, "Notification:
+            # ACH_Spaceline.ogg", "Couldn't open fd for content://settings/system/notification_sound")
+            # kept One UI's names, which are not among its sounds: no default notification sound or
+            # ringtone was ever set. When One UI's file is not in the guest's own folder for the key,
+            # the guest's first sound there is used for the session.
+            if [ -z "$g" ] && [ -n "$h" ]; then
+                case $key in
+                    ro.config.ringtone) sub=ringtones ;;
+                    ro.config.notification_sound) sub=notifications ;;
+                    *) sub=alarms ;;
+                esac
+                have=0; first=""
+                for d in "$ROOTFS"/system/media/audio/$sub "$GPR"/media/audio/$sub "$GSE"/media/audio/$sub "$ROOTFS"/my_*/media/audio/$sub; do
+                    [ -d "$d" ] || continue
+                    [ -e "$d/$h" ] && have=1
+                    [ -n "$first" ] || first=$(ls "$d" 2>/dev/null | grep -i -E '\.(ogg|mp3|m4a|wav|flac)$' | sort | head -n 1)
+                done
+                [ $have = 0 ] && [ -n "$first" ] && g=$first
+            fi
             [ -n "$g" ] && [ -n "$h" ] && [ "$g" != "$h" ] || continue
             echo "$key=$h" >> "$OVR" && "$RP" -n "$key" "$g" 2>/dev/null &&
                 echo "guest_props: $key=$g for the session (One UI: $h)"
@@ -1928,7 +2025,10 @@ ro.miui.backdrop_sampling_enabled=true"
     # has the phone's version. The minor version (sdk_full) goes with it, so the block below leaves it.
     a17_host=$(getprop ro.build.version.sdk)
     a17_guest=$(sed -n 's/^ro.build.version.sdk=//p' "$ROOTFS/system/build.prop" 2>/dev/null | tail -n 1)
-    if [ "$a17_host" = 36 ] && [ "$a17_guest" = 37 ] && grep -q '^ro.build.version.oneui=' "$ROOTFS/system/build.prop" 2>/dev/null; then
+    # 0.5.51: also another Android 17 image whose set brings its Android 17 modules for One UI 8 (ColorOS 17 on the
+    # S22s: uprobestats_payload.img staged), as guest_prepare.sh's A17_ON_A16; OxygenOS 17 Pad on tablets unchanged.
+    if [ "$a17_host" = 36 ] && [ "$a17_guest" = 37 ] &&
+       { grep -q '^ro.build.version.oneui=' "$ROOTFS/system/build.prop" 2>/dev/null || [ -f "$STAGE/uprobestats_payload.img" ]; }; then
         for key in ro.build.version.sdk ro.build.version.sdk_full ro.build.version.release \
                    ro.build.version.release_or_codename ro.build.version.release_or_preview_display ro.build.version.codename; do
             g=$(sed -n "s/^$key=//p" "$ROOTFS/system/build.prop" 2>/dev/null | tail -n 1)
@@ -1946,9 +2046,10 @@ ro.miui.backdrop_sampling_enabled=true"
         # CameraManager, which then never connects to media.camera; both read it in the One UI 9.5 image's
         # services.jar and framework.jar) keeps the guest's Java camera stack away from it. Set for the session
         # and removed on return. ONEOS_A17_CAMERA_SERVICE=1 leaves it unset (a manual start's test only).
-        # 0.5.39: not when guest_prepare.sh bound framework_patched_oneui8.jar (One UI 8's camera codes).
+        # 0.5.39: not when guest_prepare.sh bound framework_patched_oneui8.jar (One UI 8's camera codes); 0.5.45: or
+        # framework_patched_oneui85.jar on One UI 8.5.
         if [ -f "$STAGE/a16_camera_on" ]; then
-            echo "guest_props: experimental One UI 9.5 on One UI 8: camera on (One UI 8's camera codes)"
+            echo "guest_props: experimental One UI 9.5 on One UI 8: camera on (the phone's own camera codes, guest_prepare.sh)"
         elif [ "${ONEOS_A17_CAMERA_SERVICE:-0}" != 1 ]; then
             key=config.disable_cameraservice
             h=$(getprop "$key")
@@ -2028,13 +2129,17 @@ ro.miui.backdrop_sampling_enabled=true"
         ""|*[!0-9]*) ;;
         *) [ "$hsep" -lt 180000 ] && oneui_version_props="$oneui_version_props ro.build.version.sep" ;;
     esac
-    if [ "${ONEOS_PROFILE:-}" = f8 ] && [ "${ONEOS_GUEST_FORM:-}" = fold ] &&
+    if { [ "${ONEOS_PROFILE:-}" = f8 ] && [ "${ONEOS_GUEST_FORM:-}" = fold ] ||
+         case "${ONEOS_PROFILE:-}" in tab-*) true ;; *) false ;; esac; } &&
        grep -qx 'ro.build.PDA=S948BXXU6ZZKN' "$ROOTFS/system/build.prop" 2>/dev/null; then
         # Build.VERSION.SEM_PLATFORM_INT and One UI Home read sep, not sem.
-        # Use the guest's platform level with the Fold8's own hardware identity.
+        # Use the guest's platform level with the device's own hardware identity
+        # (prevents phone-only HoneyBoard / layout scaling on Fold8 and Tab S9 FE).
         oneui_version_props="$oneui_version_props ro.build.version.sep"
         oneui_image_model=0
-        echo "guest_props: keeping Fold8 model for One UI 9.5"
+        # 0.5.48 (owner): One UI 9.5 on every Galaxy Tab keeps the tablet's own model like the Tab S9 FE.
+        if case "${ONEOS_PROFILE:-}" in tab-*) true ;; *) false ;; esac; then echo "guest_props: keeping the Galaxy Tab's model (${ONEOS_PROFILE}) for One UI 9.5"
+        else echo "guest_props: keeping Fold8 model for One UI 9.5"; fi
         # SystemUI reads this debug override when its application starts.
         # Use the session property journal so the host value returns with One UI.
         if [ "${ONEOS_ONEUI_HEADLINE:-1}" = 1 ]; then

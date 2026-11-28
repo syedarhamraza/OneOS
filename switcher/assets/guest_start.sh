@@ -862,9 +862,13 @@ elif [ "${ONEOS_GUEST_BL_BRIDGE:-1}" != 0 ] && [ -w "$BL/brightness" ]; then
         case "$BLMAX" in ''|*[!0-9]*) ;; *) BRIDGE=1 ;; esac
     fi
 fi
+# The Galaxy Tab S9 FE only (pull request #371, its Himax TDDI panel): the bridge polls the panel's dpms node and
+# runs at 0.2 s; every other phone keeps the 1 s loop.
+BLFAST=0
+case "${ONEOS_PROFILE:-}:$(getprop ro.product.model)" in tab-s9-fe:*|tab-s9-fe-5g:*|*:SM-X51*) BLFAST=1 ;; esac
 if [ $BRIDGE = 1 ]; then
     cat > /data/oneos_bl_bridge.sh <<'BLEOF'
-BL=$1; MAX=$2; ON=$3; LED=$4; BL2=$5; MAX2=$6
+BL=$1; MAX=$2; ON=$3; LED=$4; BL2=$5; MAX2=$6; FAST=${7:-0}
 # DUAL: a cover panel node passed (the Galaxy Z Fold4 only, see guest_start.sh).
 DUAL=0; [ -n "$BL2" ] && [ -w "$BL2/brightness" ] && DUAL=1
 case "${ONEOS_GUEST_BL_BRIDGE:-1}" in force) BLFORCE=1 ;; *) BLFORCE=0 ;; esac
@@ -951,13 +955,23 @@ NORM=$MAX
 [ "$LED" = 1 ] || [ "$MAX" -le 255 ] || NORM=255
 NORM2=$MAX2
 case "$NORM2" in ''|*[!0-9]*) NORM2=$NORM ;; *) [ "$NORM2" -gt 255 ] && NORM2=255 ;; esac
-echo "$(date +%T) brightness bridge: inner $BL (max $MAX, slider $NORM, take $TAKE_BL); cover ${BL2:-none} (max ${MAX2:-?}, slider $NORM2); scale $SCALE ${lo:-?}..${nm:-?}..${hi:-?}"
-last=""; last2=""; pw=""
+echo "$(date +%T) brightness bridge: inner $BL (max $MAX, slider $NORM, take $TAKE_BL); cover ${BL2:-none} (max ${MAX2:-?}, slider $NORM2); scale $SCALE ${lo:-?}..${nm:-?}..${hi:-?}; useSurfaceControl=${usc:-not read}, force_anyway=${force:-not read}"
+DPMS=""; SLP=1
+[ "$FAST" = 1 ] && { DPMS=/sys/class/drm/card0-DSI-1/dpms; SLP=0.2; }
+last=""; last2=""; pw=""; pdp=""; tick=5
 prev_folded=0
 if [ "$DUAL" = 1 ]; then
     [ "$(cat $BL/brightness 2>/dev/null)" = 0 ] && [ "$(cat $BL2/brightness 2>/dev/null || echo 0)" != 0 ] && prev_folded=1
 fi
 while :; do
+    dp=""; [ -r "$DPMS" ] && read -r dp < "$DPMS" 2>/dev/null
+    if [ "$dp" != "$pdp" ]; then
+        pdp=$dp; last=""; tick=5
+    fi
+    if [ "$FAST" = 1 ] && [ $tick -lt 5 ]; then
+        tick=$((tick + 1)); sleep 0.2; continue
+    fi
+    tick=0
     w=$(timeout 3 dumpsys power 2>/dev/null | sed -n 's/^ *mWakefulness=//p' | head -n 1)
     [ "$w" = "$pw" ] || { last=""; last2=""; }
     pw=$w
@@ -1001,7 +1015,7 @@ while :; do
     fi
     case "$w" in
         Asleep)
-            if [ "$LED" = 1 ]; then v=0; else v=""; fi
+            if [ "$LED" = 1 ] || [ "$dp" = Off ]; then v=0; else v=""; fi
             v2=0
             ;;
         Dozing)
@@ -1083,10 +1097,10 @@ while :; do
             last2=$v2
         fi
     fi
-    sleep 1
+    sleep $SLP
 done
 BLEOF
-    $BB sh /data/oneos_bl_bridge.sh "$BL" "$BLMAX" "$BLON" "$LEDBL" "$BLCOVER" "$BL2MAX" </dev/null >> /data/backlight.log 2>&1 &
+    $BB sh /data/oneos_bl_bridge.sh "$BL" "$BLMAX" "$BLON" "$LEDBL" "$BLCOVER" "$BL2MAX" "$BLFAST" </dev/null >> /data/backlight.log 2>&1 &
     if [ $LEDBL = 1 ]; then echo "[Pivoted Root] Backlight: LED bridge started for $BL"
     elif [ -n "$BLCOVER" ]; then echo "[Pivoted Root] Backlight: dual-panel brightness bridge started for inner $BL and cover $BL2; see backlight.log"
     else echo "[Pivoted Root] Backlight: brightness bridge started for $BL (it runs only if the composer refuses brightness and the system does not use the lights HAL; see backlight.log)"; fi
@@ -1343,6 +1357,9 @@ fi
 # started here and watched alongside the boot: if it has not registered after
 # 60 s, or keeps dying, Samsung's audioserver takes over (AudioService waits
 # for the policy service without a timeout).
+# The Galaxy Tab S9 FE only (pull request #371): real-time priority for the guest audioserver, and One UI guests keep Dolby to SoundAlive (marker file).
+rm -f /data/oneos_audio_rt
+case "${ONEOS_PROFILE:-}:$(getprop ro.product.model)" in tab-s9-fe:*|tab-s9-fe-5g:*|*:SM-X51*) : > /data/oneos_audio_rt ;; esac
 if [ -f /data/guest_audio.flag ]; then
     echo "[Pivoted Root] Starting guest audioserver..."
     mkdir -p /data/misc/audioserver && chown 1041:1005 /data/misc/audioserver && chmod 0700 /data/misc/audioserver
@@ -1505,7 +1522,7 @@ if [ -f /data/guest_audio.flag ]; then
             done' oneos_a2dp_watch "$BB" >> /data/oneos_a2dp.log 2>&1 &
         echo "[Pivoted Root] A2DP: Bluetooth stream watch on (the HAL has a bluetooth module; /data/oneos_a2dp.log)"
     fi
-    /system/bin/audioserver > /dev/null 2>&1 &
+    ([ -f /data/oneos_audio_rt ] && ulimit -r 99 2>/dev/null; exec /system/bin/audioserver) > /dev/null 2>&1 &
     AS_PID=$!
     echo "[Pivoted Root] guest audioserver PID: $AS_PID (registers once the guest framework is up)"
     echo "=== $(date '+%F %T') session: guest audioserver $AS_PID" >> /data/audio_keeper.log
@@ -1538,7 +1555,7 @@ if [ -f /data/guest_audio.flag ]; then
             if ! kill -0 $as 2>/dev/null; then
                 [ $d -lt 3 ] || break
                 d=$((d + 1)); sleep 2; t=$((t + 2))
-                /system/bin/audioserver > /dev/null 2>&1 & as=$!
+                ([ -f /data/oneos_audio_rt ] && ulimit -r 99 2>/dev/null; exec /system/bin/audioserver) > /dev/null 2>&1 & as=$!
                 echo "$(date +%T) guest audioserver died before it registered (${t}s); started again as $as ($d of 3)"
                 continue
             fi
@@ -1581,15 +1598,73 @@ if [ -f /data/guest_audio.flag ]; then
         # 7, 23 and 27 minutes, the fifth handed over to Samsung audioserver, whose
         # product strategies carry Samsung usage 1005; a Pixel AudioService throws
         # Invalid usage 1005 and system_server died).
-        miss=0; r=0; last=0
+        # 0.5.50 (S22 Ultra Exynos 0158cc4a, 0.5.49): the app ops rule and a force-stop were not enough. The system
+        # binds the Google app again as the voice assistant, it loaded its Hey Google model again within seconds,
+        # the Exynos 2200 voice trigger DSP (VTS) died three more times and then hung the bus: the debug watchdog
+        # reset the phone mid setup (reset BUS CHUBVTS, WDGC debug-wdt). So the Google app also loses the
+        # assistant role (no voice interaction service, no keyphrase model) and Samsung Bixby wake-up is turned
+        # off; on the Exynos 2200 (s5e9925) this is done before the first model load, at the start.
+        # ONEOS_GUEST_HOTWORD_KEEP=1 keeps all of it.
+        hotword_off() {
+            g=com.google.android.googlequicksearchbox
+            o=$(/system/bin/sh /data/oneos_genv.sh /system/bin/cmd appops set $g RECORD_AUDIO_HOTWORD ignore 2>&1 | tr -s " \n" " " | head -c 80)
+            /system/bin/sh /data/oneos_genv.sh /system/bin/cmd role remove-role-holder --user 0 android.app.role.ASSISTANT $g >/dev/null 2>&1
+            /system/bin/sh /data/oneos_genv.sh /system/bin/settings put secure voice_interaction_service "" >/dev/null 2>&1
+            /system/bin/sh /data/oneos_genv.sh /system/bin/pm disable-user --user 0 com.samsung.android.bixby.wakeup >/dev/null 2>&1
+            /system/bin/sh /data/oneos_genv.sh /system/bin/am force-stop $g >/dev/null 2>&1
+        }
+        # 0.5.51 (S22 Ultra Exynos 3c03380f, 0.5.50): at every start, not only while /data/oneos_hotword_off.log is
+        # missing. That file was left in the guest data by a 0.5.49 session (its rule was the app op alone), so the
+        # 0.5.50 guard never ran there: the assistant role and Bixby wake-up stayed, a model was loaded 90 s in, the
+        # VTS DSP died in vts_load_sound_model and took system_server with it. Each step is idempotent.
+        if [ "${ONEOS_GUEST_HOTWORD_KEEP:-0}" != 1 ] &&
+           { getprop ro.soc.model; getprop ro.hardware; getprop ro.board.platform; } 2>/dev/null | grep -qi "s5e9925"; then
+            hotword_off
+            echo "$(date +%T) Exynos 2200 (s5e9925): voice wake-up off before the first model load (assistant role, Hey Google hotword, Bixby wake-up; the VTS DSP reset the phone on 0.5.49)" | tee -a /data/oneos_hotword_off.log
+        fi
+        miss=0; r=0; last=0; qc=0
         while [ -f /data/guest_audio.flag ]; do
             sleep 3
+            # 0.5.51 (S24 Ultra Snapdragon, PixelOS, 9bc0eb07, 0.5.48: no sound): on Qualcomm the Hey Google model
+            # goes to the ADSP, and starting recognition crashed its audio domain (COSR ar_osal_pd_notifier_cb
+            # state(0) service(avs/audio) right after PAL SoundTriggerEngineGsl StartRecognition). audioserver stayed
+            # up, so the rule below never ran: the sound card went offline, came back and went down again with each
+            # new recognition, every 0.7 s (23 starts), and every stream failed (Sound card offline/standby). Every
+            # 30 s, until the off file exists: once that order is in the log, the same hotword_off.
+            qc=$((qc + 1))
+            if [ $((qc % 10)) -eq 0 ] && [ ! -f /data/oneos_hotword_off.log ] && [ "${ONEOS_GUEST_HOTWORD_KEEP:-0}" != 1 ] &&
+               logcat -d -b main -s COSR:I 2>/dev/null | grep -q "state(0) service(avs/audio)" &&
+               logcat -d -b main -s PAL:I COSR:I 2>/dev/null | grep -E "SoundTriggerEngineGsl: StartRecognition|state\(0\) service\(avs/audio\)" |
+                   grep -A1 "StartRecognition" | grep -q "state(0) service(avs/audio)"; then
+                hotword_off
+                echo "$(date +%T) Qualcomm ADSP audio domain went down right after a voice wake-up recognition start: Hey Google DSP hotword off" | tee /data/oneos_hotword_off.log
+            fi
             if ! kill -0 $as 2>/dev/null; then why="died"
             elif [ "$(owner)" != "$as" ]; then why="media.audio_policy taken"
             else miss=0; continue; fi
             miss=$((miss + 1)); [ $miss -lt 2 ] && continue
             kill -9 $as 2>/dev/null
             now=$(date +%s); [ $((now - last)) -gt 120 ] && r=0; last=$now
+            # 0.5.45 (S23 FE One UI 8.5 8a093c12, d6be5a01): the Google app voice match model (110628 bytes) is
+            # larger than the VTS buffer of the Exynos sound trigger HAL (0x16800), which then died in
+            # vts_load_sound_model at every start of recognition, the audio HAL with it, every 75 s (17 deaths,
+            # no sound for most of the session). Once that is in the crash log: no DSP hotword for the Google app
+            # in this guest (RECORD_AUDIO_HOTWORD ignore, kept in its app ops; SoundTriggerHelper then starts no
+            # recognition) and the app stopped so it attaches again under that rule.
+            # 0.5.47 (Galaxy A17 MediaTek dcea6a06, 0.5.46): the same on MediaTek. The Google model (115700 bytes)
+            # failed in mtk_load_sound_model (IOCTL VOW_SET_SPEAKER_MODEL ERR) and the audio HAL died right after,
+            # about every minute (22 audioserver deaths; Telegram stopped responding waiting for audio, then the
+            # guest system died). Its HAL leaves no tombstone, so the error line in the main log is the sign.
+            hw=""
+            if [ ! -f /data/oneos_hotword_off.log ]; then
+                if logcat -d -b crash 2>/dev/null | grep -q "(vts_load_sound_model+"; then hw=vts_load_sound_model
+                elif logcat -d -b main -s sound_trigger_hw_default:E 2>/dev/null | grep -q "VOW_SET_SPEAKER_MODEL ERR"; then hw=mtk_load_sound_model
+                fi
+            fi
+            if [ -n "$hw" ]; then
+                hotword_off "$hw"
+                echo "$(date +%T) audio HAL died loading a voice wake-up model ($hw): Hey Google DSP hotword off for $g ($o)" | tee /data/oneos_hotword_off.log
+            fi
             # 0.4.60: no hand-over after registration. Every guest framework is not
             # Samsung, and Samsung audioserver killed it (Invalid usage 1005; 0.4.59
             # Pixel reports 2c9c6419, 630e5625, 7fe453b5: a sound model Samsung sound
@@ -1615,7 +1690,7 @@ if [ -f /data/guest_audio.flag ]; then
                 sleep 1
                 echo "$(date +%T) audio HAL services restarted for the new audioserver: $hs"
             fi
-            /system/bin/audioserver > /dev/null 2>&1 & as=$!; miss=0; r=$((r + 1))
+            ([ -f /data/oneos_audio_rt ] && ulimit -r 99 2>/dev/null; exec /system/bin/audioserver) > /dev/null 2>&1 & as=$!; miss=0; r=$((r + 1))
             echo "$(date +%T) guest audioserver $why, restarted as $as"
             ( n=0; while [ $n -lt 30 ] && [ "$(owner)" != "$as" ]; do sleep 2; n=$((n + 1)); done; unsusp ) &
         done' sh "$AS_PID" </dev/null >> /data/audio_keeper.log 2>&1 &
@@ -2190,7 +2265,8 @@ FOLD8_RESTORE_DEX_HOME=0
 if [ "$(cat /data/oneos_fold_mode 2>/dev/null)" = layout ] && [ "${ONEOS_GUEST_FOLD_CONTINUE:-1}" = 1 ]; then
     FOLD_CONTINUE=1
 fi
-if [ "${ONEOS_PROFILE:-}" = f8 ] && [ "$(getprop ro.product.model)" = SM-F971B ] &&
+if { [ "${ONEOS_PROFILE:-}" = f8 ] && [ "$(getprop ro.product.model)" = SM-F971B ] ||
+     case "${ONEOS_PROFILE:-}:$(getprop ro.product.model)" in tab-*:*|*:SM-X510|*:SM-X516*) true ;; *) false ;; esac; } &&
    grep -qx 'ro.build.PDA=S948BXXU6ZZKN' /system/build.prop &&
    [ ! -e /data/.oneui95-fold8-taskbar ] && [ ! -L /data/.oneui95-fold8-taskbar ]; then
     FOLD8_TASKBAR=1
@@ -2257,7 +2333,8 @@ if [ "$FOLD_CONTINUE" = 1 ] || [ "$FOLD8_TASKBAR" = 1 ] || [ "$FOLD8_RESTORE_DEX
     echo "[Pivoted Root] Fold preferences will be applied when the guest settings provider answers (/data/fold_setting.log)"
 fi
 # Samsung's Live Notifications developer setting belongs to the guest user.
-if [ "${ONEOS_PROFILE:-}" = f8 ] && [ "${ONEOS_GUEST_FORM:-}" = fold ] &&
+if { [ "${ONEOS_PROFILE:-}" = f8 ] && [ "${ONEOS_GUEST_FORM:-}" = fold ] ||
+     case "${ONEOS_PROFILE:-}:$(getprop ro.product.model)" in tab-*:*|*:SM-X510|*:SM-X516*) true ;; *) false ;; esac; } &&
    grep -qx 'ro.build.PDA=S948BXXU6ZZKN' /system/build.prop 2>/dev/null; then
     $BB sh -c '
         key=enable_notification_nowbar_test
@@ -2353,6 +2430,35 @@ if [ -e /system/framework/vivo-services.jar ] && [ "${ONEOS_GUEST_VIVO_SETUP:-0}
     " </dev/null >> /data/vivo_setup.log 2>&1 &
     echo "[Pivoted Root] vivo setup: device_provisioned, user_setup_complete, setup_wizard_has_run = 1 where not, once the guest's settings provider answers (/data/vivo_setup.log)"
 fi
+# 0.5.48 (Z Fold8 F971U 7ec32f30, One UI 9.5 on 0.5.46): on a US carrier phone Samsung's setup wizard goes on
+# from its terms page to the US activation flow, a script in com.sec.android.app.setupwizard, which the image
+# (S948B, global) does not have: Google's WizardManager logged "Cannot find file: android.resource://
+# com.sec.android.app.setupwizard/raw/wizard_script_usa_activation_flow", crashed (NPE in its script loader)
+# seven times and the setup never went on ("Settings has stopped"). When that line shows while the guest is
+# not set up yet, setup is marked done, both wizards are turned off for this system and HOME is started;
+# Google and Samsung accounts are added later in Settings. ONEOS_GUEST_SUW_KEEP=1 leaves it as it is.
+if grep -q '^ro.build.version.oneui=' /system/build.prop 2>/dev/null && [ "${ONEOS_GUEST_SUW_KEEP:-0}" != 1 ]; then
+    $BB sh -c "
+        i=0
+        while [ \$i -lt 240 ]; do
+            sleep 5; i=\$((i + 1))
+            p=\$(timeout 5 settings get global device_provisioned 2>/dev/null); u=\$(timeout 5 settings get secure user_setup_complete 2>/dev/null)
+            [ \"\$p:\$u\" = 1:1 ] && exit 0
+            logcat -d -b main -s WizardManager:E 2>/dev/null | grep -q 'Cannot find file: android.resource://com.sec.android.app.setupwizard/' || continue
+            for kv in 'global device_provisioned' 'secure user_setup_complete' 'secure setup_wizard_has_run'; do
+                set -- \$kv
+                timeout 5 settings put \$1 \$2 1 2>/dev/null
+            done
+            for pk in com.google.android.setupwizard com.sec.android.app.SecSetupWizard; do
+                timeout 10 pm disable-user --user 0 \$pk >/dev/null 2>&1 && echo \"\$(date +%T) \$pk turned off\"
+            done
+            timeout 10 am start -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null 2>&1
+            echo \"\$(date +%T) US activation flow missing from this image: setup marked done (device_provisioned=\$(timeout 5 settings get global device_provisioned 2>/dev/null)), home started\"
+            exit 0
+        done
+    " </dev/null >> /data/oneos_suw.log 2>&1 &
+    echo "[Pivoted Root] One UI setup watch: a missing US activation flow ends the setup at home (/data/oneos_suw.log)"
+fi
 # Test build 8 had an event-driven keeper (inotifyd on the guest's opens and
 # closes, the touchscreens held all session): the guest never showed a close
 # there, so it armed late or not at all and double tap stopped working (owner,
@@ -2407,7 +2513,11 @@ if [ "${ONEOS_GUEST_SAMSUNG_AUDIO:-1}" = 1 ] && [ -d /sys/devices/virtual/audio/
         i=0
         while [ "$(getprop service.bootanim.exit)" != 1 ] && [ $i -lt 600 ]; do sleep 1; i=$((i + 1)); done
         sleep 10
-        for kv in g_effect_dolby_enable=1 g_effect_dolby_profile=0 g_effect_dolby_volume_leveler=7; do log "$(param $kv)"; done
+        if [ -f /data/oneos_audio_rt ] && grep -q '^ro.build.version.oneui=' /system/build.prop 2>/dev/null; then
+            log "One UI guest: leaving Dolby and volume leveler to SoundAlive"
+        else
+            for kv in g_effect_dolby_enable=1 g_effect_dolby_profile=0 g_effect_dolby_volume_leveler=7; do log "$(param $kv)"; done
+        fi
         last=""
         while :; do
             t=$(cat /sys/class/power_supply/battery/temp 2>/dev/null)
@@ -2919,7 +3029,7 @@ if [ "${ONEOS_GUEST_DT2W:-}" != 1 ] && grep -q '^ro.build.version.oneui=' /syste
     echo "$(date +%T) not started: a One UI image wakes on double tap itself (its input service drives the touch IC)" >> /data/dt2w.log
 fi
 if [ "$DT2W" = 1 ] && command -v getevent >/dev/null 2>&1 && { [ -w /sys/class/sec/tsp/enabled ] || [ -w /sys/class/sec/tsp1/enabled ]; }; then
-    rm -f /data/oneos_dt2w_armed.* /data/oneos_dt2w_*.fifo /data/oneos_dt2w_aod* /data/oneos_dt2w_lid*
+    rm -f /data/oneos_dt2w_armed.* /data/oneos_dt2w_*.fifo /data/oneos_dt2w_aod* /data/oneos_dt2w_lid* /data/oneos_himax_aot.*
     ONEOS_BB="$BB" $BB sh -c '
         BB=$ONEOS_BB
         log() { echo "$(date +%T) $*"; }
@@ -2956,6 +3066,19 @@ if [ "$DT2W" = 1 ] && command -v getevent >/dev/null 2>&1 && { [ -w /sys/class/s
                     1:0|2:1) power=2; eon=2 ;;
                     *) log "$t: unmeasured STM power state; double tap left to the guest"; continue ;;
                 esac
+            fi
+            # Himax in-cell TDDI (Galaxy Tab S9 FE SM-X510, himax_tp / HX83102J): with aot_enable=1
+            # (One UI double-tap LPM), writing 1,0 on sleep makes himax_tp hold lcd_regulators and
+            # lcd_reset_regulator (lcd_rst) HIGH. One UI releases lcd_rst with 2,0 *before*
+            # SurfaceFlinger.setPowerMode(2), whereas a non-One-UI guest runs panel_reset_lp11 while
+            # lcd_rst is still held HIGH, so the TDDI DDI never resets and the screen stays dead black.
+            # Turning aot_enable off for the session puts 1,0 into clean HIMAX_STATE_POWER_OFF without
+            # holding lcd_rst, while keeping 1,0/2,1 active so wake still reloads the zero-flash FW.
+            if [ "$(readlink -f $I/device/driver 2>/dev/null)" = /sys/bus/spi/drivers/himax_tp ] && [ -w $T/cmd ]; then
+                if echo aot_enable,0 > $T/cmd 2>/dev/null; then
+                    : > /data/oneos_himax_aot.$t
+                    log "$t: Himax TDDI (himax_tp): aot_enable,0 for the session (LPM holds lcd_rst high across panel_reset_lp11); keeper still runs 1,0/2,1 for zero-flash FW reload on wake"
+                fi
             fi
             # KEY_WAKEUP (143) among its keys: bit 15 of the third word from the end.
             set -- $(cat $I/capabilities/key 2>/dev/null)

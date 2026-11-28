@@ -117,6 +117,10 @@ class SessionLogsTest {
         assertEquals(50, sfGone.afterSeconds)
         assertEquals(OutcomeKind.BOOT_TIMEOUT, o("x guest still not booted after 600s, returning to One UI\n").kind)
         assertEquals(OutcomeKind.GUEST_SHUTDOWN, o("x guest requested 'shutdown,battery' after 100s, returning to One UI\n").kind)
+        // 0.5.51: a shutdown asked with the guest's screen off returns to One UI and keeps the phone on.
+        val asleep = o("x guest requested 'asleep:shutdown' after 130s, returning to One UI\n")
+        assertEquals(OutcomeKind.GUEST_SHUTDOWN to 130, asleep.kind to asleep.afterSeconds)
+        assertTrue(asleep.detail, asleep.detail.contains("with its screen off; OneOS returned to One UI and kept the phone on."))
         assertEquals(OutcomeKind.HARD_RESET, o("", reason = "reboot,longkey").kind)
         // takeover_app.log of the launch decides first.
         val launch = "=== OneOS app launch 0123456789abcdef session 2026-10-22 ===\n"
@@ -234,5 +238,21 @@ class SessionLogsTest {
         } finally {
             dir.deleteRecursively()
         }
+    }
+
+    @Test
+    fun bootReasonOfABootBeforeTheSessionIsNotShown() {
+        val reason = "sys.boot.reason=reboot,lpm\npersist.sys.boot.reason.history=reboot,lpm,1795603453\nreboot,userrequested,1795533063\n"
+        val current = "{\n  \"session\": \"ae8032612faf0fce\",\n  \"epoch\": 1795635974,\n  \"boot\": \"x\"\n}"
+        assertEquals(ReturnOutcomes.NO_RESTART, ReturnOutcomes.currentBootReason(reason, current))
+        // A restart after the session started keeps its reason.
+        val later = current.replace("1795635974", "1795600000")
+        assertEquals("reboot,lpm", ReturnOutcomes.currentBootReason(reason, later))
+        // No session start known: the reason as before.
+        assertEquals("reboot,lpm", ReturnOutcomes.currentBootReason(reason, null))
+        assertNull(ReturnOutcomes.currentBootReason(null, current))
+        // Nothing logged and no restart: not a force restart.
+        assertEquals(OutcomeKind.UNKNOWN, ReturnOutcomes.parse(null, null, ReturnOutcomes.NO_RESTART).kind)
+        assertEquals(OutcomeKind.HARD_RESET, ReturnOutcomes.parse(null, null, "reboot,lpm").kind)
     }
 }

@@ -31,6 +31,16 @@
  *                                                    detaches it from the cgroup (default /sys/fs/cgroup)
  *                                                    only if the program attached there is this one, then
  *                                                    unlinks the pin
+ *
+ * 0.5.44, S22 on One UI 8 (0.5.43 494048ab): One UI 8's tethering module, under Android 17, opens
+ * /sys/fs/bpf/netd_shared/map_netd_l4s_accecn_enabled_map (an array, 4-byte key, 1-byte value, 1 entry;
+ * read on the A36's One UI 9) in BpfNetMaps.initBpfMaps, which One UI 8's loader never pinned:
+ * NetworkStatsService died on "Cannot open l4s_accecn_ map" 10 s into the guest's boot. An empty one (all
+ * zero: L4S off) pinned there for the session.
+ *
+ *   oneos_bpf_ringbuf array-create <pinned path> <key bytes> <value bytes> <entries>
+ *                                                    pins an empty array map; exit 0 also when the path
+ *                                                    already exists (left alone); removed with remove
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -39,6 +49,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/xattr.h>
@@ -51,6 +63,40 @@
 
 static long sys_bpf(int cmd, union bpf_attr *attr) {
     return syscall(__NR_bpf, cmd, attr, sizeof(*attr));
+}
+
+/*
+ * 0.5.47 (S22 Ultra Exynos 6daa8c2c, 0.5.45): that kernel refuses BPF_PROG_LOAD and BPF_MAP_CREATE to our
+ * root ("Operation not permitted"; getting and pinning existing objects works), so no socket-ops program
+ * could be made, the guest's netd aborted every 5 s and Samsung's bootchecker restarted the phone. Some
+ * Samsung kernels allow creating BPF objects only to the boot-time loader, known by its task name; on
+ * EPERM the call is tried once more under the name "bpfloader" (the old name is put back after). Testing.
+ */
+static long sys_bpf_create(int cmd, union bpf_attr *attr) {
+    long r = sys_bpf(cmd, attr);
+    if (r >= 0 || errno != EPERM) return r;
+    char old[17] = {0};
+    if (prctl(PR_GET_NAME, old) != 0) return r;
+    if (prctl(PR_SET_NAME, "bpfloader") != 0) { errno = EPERM; return r; }
+    r = sys_bpf(cmd, attr);
+    int e = errno;
+    prctl(PR_SET_NAME, old);
+    if (r >= 0) fprintf(stderr, "%s allowed under the task name bpfloader\n",
+                        cmd == BPF_PROG_LOAD ? "BPF_PROG_LOAD" : "BPF_MAP_CREATE");
+    errno = e;
+    return r;
+}
+
+/*
+ * 0.5.49 (S22 Ultra Exynos 25706f39, 0.5.48: still EPERM under the bpfloader name and in the bpfloader
+ * domain): kernels before 5.11 charge BPF maps and programs to the user's locked memory and answer EPERM
+ * when RLIMIT_MEMLOCK is exceeded. For root that total already holds every map and program the boot-time
+ * loader made, so a root shell with the usual small limit can create none. Android's bpfloader raises the
+ * limit first; so do we (root may). Newer kernels charge memory cgroups instead and ignore this. Testing.
+ */
+static void raise_memlock(void) {
+    struct rlimit rl = { RLIM_INFINITY, RLIM_INFINITY };
+    if (setrlimit(RLIMIT_MEMLOCK, &rl) != 0) perror("setrlimit RLIMIT_MEMLOCK");
 }
 
 /* The SELinux label of another entry in the same folder (the module's own maps). */
@@ -116,7 +162,7 @@ static int sockops_create(const char *path) {
     a.insns = (uint64_t)(uintptr_t)insns;
     a.license = (uint64_t)(uintptr_t)license;
     a.expected_attach_type = BPF_CGROUP_SOCK_OPS;
-    long fd = sys_bpf(BPF_PROG_LOAD, &a);
+    long fd = sys_bpf_create(BPF_PROG_LOAD, &a);
     if (fd < 0) { perror("BPF_PROG_LOAD"); return 1; }
     memset(&a, 0, sizeof(a));
     a.pathname = (uint64_t)(uintptr_t)path;
@@ -214,7 +260,37 @@ static int ringbuf_alias(const char *src, const char *path) {
     return 0;
 }
 
+static int array_create(const char *path, unsigned long key, unsigned long value, unsigned long entries) {
+    if (key == 0 || value == 0 || entries == 0 || key > 512 || value > 65536 || entries > 65536) {
+        fprintf(stderr, "bad array sizes\n");
+        return 2;
+    }
+    struct stat st;
+    if (stat(path, &st) == 0) { printf("exists %s\n", path); return 0; }
+    union bpf_attr a;
+    memset(&a, 0, sizeof(a));
+    a.map_type = BPF_MAP_TYPE_ARRAY;
+    a.key_size = (uint32_t)key;
+    a.value_size = (uint32_t)value;
+    a.max_entries = (uint32_t)entries;
+    long fd = sys_bpf_create(BPF_MAP_CREATE, &a);
+    if (fd < 0) { perror("BPF_MAP_CREATE"); return 1; }
+    memset(&a, 0, sizeof(a));
+    a.pathname = (uint64_t)(uintptr_t)path;
+    a.bpf_fd = (uint32_t)fd;
+    if (sys_bpf(BPF_OBJ_PIN, &a) != 0) { perror("BPF_OBJ_PIN"); close((int)fd); return 1; }
+    close((int)fd);
+    if (chown(path, 0, 1000) != 0) perror("chown");
+    if (chmod(path, 0660) != 0) perror("chmod");
+    if (copy_label(path) != 0) fprintf(stderr, "no SELinux label copied for %s\n", path);
+    printf("created %s (array, key %lu, value %lu, %lu entries)\n", path, key, value, entries);
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    raise_memlock();
+    if (argc >= 6 && strcmp(argv[1], "array-create") == 0)
+        return array_create(argv[2], strtoul(argv[3], NULL, 0), strtoul(argv[4], NULL, 0), strtoul(argv[5], NULL, 0));
     if (argc >= 4 && strcmp(argv[1], "alias") == 0) return ringbuf_alias(argv[2], argv[3]);
     if (argc >= 3 && strcmp(argv[1], "sockops-create") == 0) return sockops_create(argv[2]);
     if (argc >= 3 && strcmp(argv[1], "sockops-remove") == 0)
@@ -225,7 +301,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (argc < 3 || strcmp(argv[1], "create") != 0) {
-        fprintf(stderr, "usage: %s create <pinned path> [bytes] | alias <ring buffer pin> <pinned path> | remove <pinned path> | sockops-create <pinned path> | sockops-remove <pinned path> [cgroup]\n", argv[0]);
+        fprintf(stderr, "usage: %s create <pinned path> [bytes] | alias <ring buffer pin> <pinned path> | remove <pinned path> | sockops-create <pinned path> | sockops-remove <pinned path> [cgroup] | array-create <pinned path> <key> <value> <entries>\n", argv[0]);
         return 2;
     }
     const char *path = argv[2];
@@ -237,7 +313,7 @@ int main(int argc, char **argv) {
     memset(&a, 0, sizeof(a));
     a.map_type = BPF_MAP_TYPE_RINGBUF;
     a.max_entries = (uint32_t)bytes;
-    long fd = sys_bpf(BPF_MAP_CREATE, &a);
+    long fd = sys_bpf_create(BPF_MAP_CREATE, &a);
     if (fd < 0) { perror("BPF_MAP_CREATE"); return 1; }
     memset(&a, 0, sizeof(a));
     a.pathname = (uint64_t)(uintptr_t)path;

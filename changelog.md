@@ -801,6 +801,108 @@ battery drain fixed.**
   HyperOS files: HyperOS started its status bar and home screen before OneOS's sizes were on. Both now restart once
   when that happens.
 
+New in 0.5.52: **fingerprint in Infinity-X and LineageOS, ColorOS fingerprint icon on QHD phones.**
+- **Fingerprint unlock in Infinity-X and LineageOS** with One UI's own fingerprints, and a fingerprint ring on the
+  Infinity-X lock screen placed from the phone's sensor (vdcoolok's work, pull request #152) (testing).
+- **ColorOS fingerprint icon** on the S25 Ultra and other QHD phones with One UI at FHD+ now sits on the sensor: the
+  other system runs the whole panel, and the icon was placed for One UI's resolution (testing).
+- Samsung Camera through bound copies on the older-kernel phones (S22 series, S23 FE, A25, A33, A53) is off again:
+  it stopped ColorOS from starting on the S22s.
+- Session reports record where /data's space goes.
+
+New in 0.5.51: **smoother sessions with full logs, S26 black screen, ColorOS fingerprint wave.**
+- **Less heat and lag with full logs on**: full session logs record the first 10 minutes of a session, then stop;
+  **Record full logs from now** in the other system's OneOS app records until the return. With Full session logs off,
+  the background CPU sampler and sound log are skipped too.
+- **Galaxy S26 series: black screen fixed** on PixelOS and the other systems that got the 0.5.49 camera change (testing).
+- **ColorOS 17 fingerprint wave on ultrasonic sensors** (S25 Ultra and others), vdcoolok's work from pull request #152:
+  the icon at once at the wake, the wave over home after the unlock, no dark dim layer in the unlock (testing).
+- **Samsung Camera on the Galaxy S22 series, S23 FE, A25, A33 and A53** in the other systems: their kernel refused the
+  layer that adds it, so it never installed (testing).
+- Snapdragon phones (S24 Ultra): no sound for the rest of a session after Hey Google crashed the audio DSP; OneOS now
+  turns Hey Google listening off when it happens (testing).
+- Galaxy S22 Ultra (Exynos), One UI 9.5: the voice wake-up guard runs at every start (testing).
+- New phone: the au Galaxy S25 (SCG31), with the Galaxy S25's systems (untested).
+- OriginOS camera on the Z Fold5, HeyTap store stopped in the background on ColorOS and OxygenOS, a power-off request
+  with the screen off returns to One UI, and apps reinstalled after Bring apps no longer crash (testing).
+
+New in 0.5.50: **S22 Ultra (Exynos) One UI 9.5 setup, OriginOS camera on the Z Fold5.**
+- **Galaxy S22 Ultra (Exynos) with One UI 9.5 now starts** (the 0.5.49 fix worked), and no longer restarts the
+  phone during setup: Google's "Hey Google" crashed the Exynos 2200 voice wake-up chip until the whole phone reset.
+  On that chip OneOS now turns voice wake-up off (Hey Google and Bixby) before it can load (testing).
+- **OriginOS camera on the Z Fold5** and other folds: vivo's camera opened a fold screen its build doesn't have and
+  closed at once. It now opens with its normal layout (testing).
+- Galaxy S23 FE on One UI 8.5: the session logs record what the One UI 9.5 camera fix still needs.
+
+New in 0.5.49: **S26 series camera with every non-Samsung system, ColorOS and OriginOS notification sounds, S22 Ultra (Exynos) One UI 9.5.**
+- **Camera on One UI 9.5 phones (S26 series) with HyperOS, PixelOS, Pixel, LineageOS, Infinity-X, Nothing OS,
+  ColorOS and OriginOS**: One UI 9.5 added a field to every camera request and OneOS sent the old one, so the camera
+  failed and HyperOS on the S26 Ultra stopped 7 seconds after starting (testing).
+- **ColorOS notification, ringtone and alarm sounds** (Z Fold5, S23 and others): every sound waited 10 seconds for an
+  OPPO service a Samsung phone does not have, and notifications gave up before they played. OneOS now stands in
+  for it (testing).
+- **OriginOS notification sound**: OriginOS looked for One UI's sound files, which it does not have, so no default
+  sound was set. It now uses its own (testing).
+- **Galaxy S22 Ultra (Exynos) with One UI 9.5** should now start: its kernel refused the network program because
+  of root's small locked-memory limit, which OneOS now raises like Android's own loader (testing).
+- Session logs no longer show an earlier restart as the way the session ended.
+
+New in 0.5.48: **One UI 9.5 on every Galaxy Tab, the Galaxy Tab S11 Ultra, Z Fold8 (US) first setup, S25 Ultra restarts.**
+- **One UI 9.5 on every Galaxy Tab** we support (Tab S9, S9 Ultra, S9 FE+, S10 FE 5G and Wi-Fi, S11, S12 Ultra), next
+  to the tablet ColorOS/OxygenOS 17, each keeping its own tablet model (testing; the LCD and camera fixes are the
+  Tab S9 FE's only so far).
+- **Galaxy Tab S11 Ultra (SM-X930)** with the tablet ColorOS/OxygenOS 17 and One UI 9.5 (testing).
+- **One UI 9.5 first setup on US carrier phones** (Z Fold8 SM-F971U and others): Samsung's setup went on to a US
+  carrier activation step the image does not have and stopped there ("Settings has stopped"). OneOS now finishes the
+  setup at the home screen when that happens; add your accounts afterwards in Settings › Accounts (testing).
+- **Galaxy S25 Ultra with One UI 9.5: Bixby is turned off** for now. Setting up Bixby voice wake-up froze the whole
+  phone and the chip's watchdog restarted it (testing).
+
+New in 0.5.47: **S22 Ultra (Exynos) restart loop, Galaxy A17 freezes, Galaxy Tab S9 FE 5G, OriginOS on the Z Fold5.**
+- **Galaxy S22 Ultra (Exynos) with One UI 9.5 no longer restarts the phone again and again** (testing). Its kernel
+  refused a small network program One UI 9.5 needs, so the system never finished starting and Samsung's boot checker
+  restarted the phone. OneOS now tries two more ways to make it; if the phone still refuses, OneOS stops before
+  starting and returns to One UI once, with a message, instead of the restart loop.
+- **Galaxy A17 (MediaTek) with One UI 9.5: apps such as Telegram no longer freeze** (testing). Loading the "Hey Google"
+  voice model crashed the phone's audio chip about once a minute, and apps waiting for sound stopped responding.
+  OneOS now turns off Hey Google's always-listening mode when that happens, as it already did on Exynos phones.
+- **Galaxy Tab S9 FE 5G (SM-X516B/N)** with OxygenOS 17 Pad and One UI 9.5, like the Wi-Fi model (testing).
+- **Galaxy Z Fold5: OriginOS 7** too, as on the Z Flip5 (testing).
+
+New in 0.5.46: **Send to the OneOS team is back, Galaxy Tab fixes, Galaxy Tab S9 FE, OriginOS on the Z Flip5.**
+- **Send to the OneOS team** shows again in Last session and Session logs. It was hidden in every build since 0.5.24,
+  so only Share and Save were there. On Session logs, the "Send the logs to the OneOS team" line now opens it too.
+- **Galaxy Tabs: ColorOS no longer powers the tablet off** after 13-30 minutes. ColorOS's setup app has an alarm
+  that powers the device off while its pages wait; OneOS turns that alarm off (testing).
+- **Galaxy Tabs: "The data in the stage is another system's"** after the first session is fixed. ColorOS 17 on
+  tablets skips one OnePlus app, so OneOS took its own data for another system's and refused every update.
+- **Galaxy Tab S9 FE (SM-X510)** with OxygenOS 17 Pad and One UI 9.5, from pull request #371 by asarr22 (testing).
+- **Galaxy Z Flip5: OriginOS 7** too, as on the S23s with the same chip (testing).
+
+New in 0.5.45: **Camera for One UI 9.5 on One UI 8.5 phones, the Z Fold8 starts One UI 9.5 again, S22 fixes, clearer broken downloads.**
+- **Camera in One UI 9.5 on One UI 8.5 phones** (S23 FE, A35, S22s updated to One UI 8.5; testing): One UI 8.5 asks for
+  the camera in a newer way than One UI 8, so every camera call failed and Samsung's video call service crashed again
+  and again. These phones now get their own camera file.
+- **Z Fold8: One UI 9.5 starts again** (since 0.5.42 it stopped at startup).
+- **One UI 9.5 on the S22 and other One UI 8 phones** (testing): it stopped about 50 seconds in on a second network
+  log One UI 8 never set up. OneOS now sets that up for the session too.
+- **No sound on some Exynos phones** (S23 FE; testing): the "Hey Google" voice model was too big for the phone's voice
+  wake-up chip, which crashed the sound service every minute. OneOS now turns off Hey Google's always-on listening
+  in the other system when that happens.
+- **S Pen on Galaxy Tabs** (ColorOS; testing): the pen worked as a mouse pointer. It now writes and taps like a pen.
+- **"The download is damaged"** now says what to do: delete the file, download it again (use ADM from the Play Store
+  if Chrome keeps breaking it), then choose the new file. The button is Download again instead of Retry update,
+  which only checked the same broken file again.
+- Reports now say which root setting changed when the return to One UI fell back to a restart, and which app asked
+  the other system to power off.
+
+New in 0.5.44: **One UI 9.5 on the Galaxy S22 (Snapdragon) gets past its first minute, ColorOS on Galaxy Tabs as a tablet.**
+- 0.5.43 got One UI 9.5 starting on these phones, but on the S22 it stopped after about a minute: One UI 8's network
+  module asked for a newer network setting (L4S) that One UI 8 never set up. OneOS now sets it up, switched off,
+  for the session, and removes it when you return. Untested on a phone.
+- **ColorOS 17 on Galaxy Tabs is a tablet now:** it showed the phone lock screen, home screen and dock. OneOS now tells
+  ColorOS it runs on a tablet.
+
 New in 0.5.43: **One UI 9.5 starts again on One UI 8 phones (S22 series and others), Tab S9 Ultra and Tab S11.**
 - **One UI 9.5 stuck on the OneOS logo** (0.5.39 to 0.5.42, the S22 series, S23 FE and other phones whose sound driver
   is the older kind): a sound check OneOS made before starting One UI 9.5 waited forever. It now asks only what

@@ -493,7 +493,7 @@ GUEST_ANIM_REQ="$STAGE/data/user/0/com.fahadali.oneos.guest/files/oneos_anim_lev
 ANIM_STATE="$STAGE/data/oneos_bootui/anim_level"
 rm -f "$GUEST_RETURN_REQ" "$GUEST_RESTART_REQ" "$GUEST_FULLLOGS_REQ" "$GUEST_ANIM_REQ"
 # An earlier session's mark (it would make this session's report look like full logs were on).
-rm -f "$STAGE/full_logs_mid.log"
+rm -f "$STAGE/full_logs_mid.log" "$STAGE/full_logs_keep" "$STAGE/logcat_cut"
 # One UI's protected state, recorded now and compared by return_to_oneui.sh:
 # the FRP partition, gatekeeper's files and the APEX state. The guest is kept
 # off all three (patches/guest_no_gatekeeper.py, guest_pdb_readonly.py,
@@ -700,7 +700,11 @@ fi
 # (the statusBars inset at One UI's resolution, scaled to the panel's like the
 # hole), from a phone with one default-capable internal display only (a fold's
 # two panels are left alone).
-rm -f "$STAGE/host_statusbar"
+# The Galaxy Tab S9 FE (pull request #371): what its support adds beyond the Wi-Fi-only telephony and the SM-X51*
+# model cases runs only here.
+HOST_TAB_S9_FE=0
+case "${ONEOS_PROFILE:-}:$(getprop ro.product.model)" in tab-s9-fe:*|tab-s9-fe-5g:*|*:SM-X51*) HOST_TAB_S9_FE=1 ;; esac
+rm -f "$STAGE/host_statusbar" "$STAGE/host_no_cutout"
 if [ "$(printf '%s\n' "$HLINE" | grep -c .)" = 1 ]; then
     cut_after "$HLINE" 'cutoutSpec={' '}'; HCS=$R
     HSB=$(timeout 10 dumpsys window 2>/dev/null | sed -n "s/.*type=statusBars frame=\[0,0\]\[$HDW,\([0-9]*\)\].*/\1/p" | head -n 1)
@@ -743,6 +747,8 @@ if [ "$(printf '%s\n' "$HLINE" | grep -c .)" = 1 ]; then
           [ -n "$HMP" ] && printf '%s\n' "$HMP" | awk -F'|' '{ split($1, f, " "); print "hole=" f[4]; print "rect_px=" $2; print "hole_px=" $3 }'
         } > "$STAGE/host_statusbar"
         echo "Host status bar: cutout '${HCS:-none}', height ${HSB:-not read} px, corner radius ${HRC:-not read} px on the $HPW px panel; $(grep -E '^(hole|rect_px|hole_px)=' "$STAGE/host_statusbar" | tr '\n' ' ')"
+    elif [ "$HOST_TAB_S9_FE" = 1 ] && [ -z "$HOLES" ] && [ -z "$HCS" ]; then
+        : > "$STAGE/host_no_cutout"
     fi
 fi
 echo "preflight: display statusbar block done $(date +%T)"
@@ -1008,7 +1014,8 @@ fi
 # without sound and a game's endless static (A56 da7379d6, M55s 0e73a8d6) all
 # fell in the gap between the capture's head and its end (A56: 13:48-15:35);
 # this log had the whole A56 session but none of those tags.
-if [ "${ONEOS_LOGCAT:-1}" = 1 ]; then
+# 0.5.51 (owner: "Disable all logs when we are talking live"): off with Full session logs off as well.
+if [ "${ONEOS_LOGCAT:-1}" = 1 ] && [ "${ONEOS_FULL_LOGS:-1}" = 1 ]; then
     # Every earlier one, by its command line (0.5.20): the saved pid missed some, and the two-hour
     # timeout does not count while the phone sleeps, so readers from earlier sessions piled up (A36
     # ColorOS 11-17: five at once, logd at 100 % CPU and the guest sluggish).
@@ -1652,20 +1659,26 @@ ls -l /vendor/etc/displayconfig /vendor/odm/etc/displayconfig /vendor/odm/etc/de
 # UI 9.0's and 9.5's (switcher/patches/host_camera*.txt, from firmware); One UI 8's was never read, so the
 # camera stays off for One UI 9.5 on a One UI 8 phone. The Stub and Proxy classes of the four camera
 # interfaces from One UI's own framework.jar (ART's dexdump, in the background; scripts/aidl-table.py reads
-# the file). Only on Android 16 phones and once per phone build (kept in data/ across sessions).
+# the file). Only on Android 16 phones and once per phone build (kept in data/ across sessions). "# 2" (0.5.50):
+# also CameraCompatibilityInfo, whose field count differs between One UI versions (S23 FE 39aa3131: One UI 8.5
+# still answered every camera call with a NullPointerException after framework_patched_oneui85.jar). "# 3"
+# (0.5.51): AttributionSourceState too, and the code (dexdump -d): One UI 8.5's CameraCompatibilityInfo and
+# getCameraCharacteristics match the guest's (103432ce), so the caller's AttributionSourceState layout is next.
 CTD="$STAGE/data/oneos_host_camera_dexdump.txt"
 if [ "$(getprop ro.build.version.sdk)" = 36 ] && [ -x /apex/com.android.art/bin/dexdump ] &&
-   [ "$(head -n 1 "$CTD" 2>/dev/null)" != "# $(getprop ro.build.fingerprint)" ]; then
+   [ "$(head -n 1 "$CTD" 2>/dev/null)" != "# 3 $(getprop ro.build.fingerprint)" ]; then
     ( t="$STAGE/camdex.tmp"; rm -rf "$t"; mkdir -p "$t" "$STAGE/data" || exit 0
-      echo "# $(getprop ro.build.fingerprint)" > "$CTD.new"
+      echo "# 3 $(getprop ro.build.fingerprint)" > "$CTD.new"
       for e in $(unzip -l /system/framework/framework.jar 2>/dev/null | awk '$NF ~ /^classes[0-9]*\.dex$/ {print $NF}'); do
           unzip -p /system/framework/framework.jar "$e" > "$t/x.dex" 2>/dev/null || continue
-          grep -a -q -F 'Landroid/hardware/ICameraService$Stub;' "$t/x.dex" 2>/dev/null || continue
+          grep -a -q -e 'Landroid/hardware/ICameraService$Stub;' -e 'Landroid/content/res/CameraCompatibilityInfo;' -e 'Landroid/content/AttributionSourceState;' "$t/x.dex" 2>/dev/null || continue
           echo "# $e" >> "$CTD.new"
-          nice -n 10 /apex/com.android.art/bin/dexdump "$t/x.dex" 2>/dev/null | awk '
+          nice -n 10 /apex/com.android.art/bin/dexdump -d "$t/x.dex" 2>/dev/null | awk '
               /^Class #[0-9]+/ { if (keep) printf "%s", buf; buf = ""; keep = 0 }
               { buf = buf $0 "\n" }
               /Class descriptor  : .Landroid\/hardware\/(ICameraService|ICameraServiceListener|camera2\/ICameraDeviceCallbacks|camera2\/ICameraDeviceUser)\$Stub(\$Proxy)?;/ { keep = 1 }
+              /Class descriptor  : .Landroid\/content\/res\/CameraCompatibilityInfo;/ { keep = 1 }
+              /Class descriptor  : .Landroid\/content\/AttributionSourceState;/ { keep = 1 }
               END { if (keep) printf "%s", buf }' >> "$CTD.new"
       done
       rm -rf "$t"
@@ -2596,6 +2609,11 @@ if [ "${ONEOS_PROFILE:-}" = f8 ] && grep -q '^  "image": "infinityx41-findx9u",$
 fi
 GUEST_POSTURE_LIVE=0; [ "${ONEOS_GUEST_POSTURE:-$POSTURE_DEFAULT}" = live ] && GUEST_POSTURE_LIVE=1
 GUEST_FOLD_FORM=0; [ "${ONEOS_GUEST_FORM:-fold}" = fold ] && GUEST_FOLD_FORM=1
+HOST_WIFI_ONLY=0
+if [ "$(getprop ro.radio.noril)" = yes ] || [ "$(getprop ro.radio.noril)" = true ] || [ "$(getprop ro.radio.noril)" = 1 ] || \
+   [ "$(getprop ro.carrier)" = wifi-only ]; then
+    HOST_WIFI_ONLY=1
+fi
 # An OxygenOS image (its stable display size resource, see "stable display size"
 # in the UI activator).
 GUEST_OXYGEN=0; grep -q '^  "image": "oxygenos' "$STAGE/.oneos_stage" 2>/dev/null && GUEST_OXYGEN=1
@@ -2857,7 +2875,7 @@ while true; do
             # the A36 it alone missed about 240 frames in 30 s. Once per guest data (marker), so a user who
             # turns it back on (Developer options > Allow window-level blurs; Android 17: Accessibility > Color and
             # motion > Reduce blur effects, its developer toggle writing nothing in PixelOS 17) keeps it.
-            case \"\$(getprop ro.product.model)\" in SM-A*|SM-M*)
+            case \"\$(getprop ro.product.model)\" in SM-A*|SM-M*|SM-X51*)
                 if [ ! -f $STAGE/data/oneos_blur_default ]; then
                     $BB nsenter -t \$PID -m /system/bin/sh /data/oneos_genv.sh /system/bin/settings put global disable_window_blurs 1 2>/dev/null &&
                         touch $STAGE/data/oneos_blur_default && echo \"[UI Activator] window blur off once (mid-range Galaxy; Developer options > Allow window-level blurs, or on Android 17 Accessibility > Color and motion > Reduce blur effects, turn it back on)\"
@@ -2877,6 +2895,23 @@ while true; do
             echo \"[UI Activator] navigation: hide_navigationbar_enable=\$NAVK navigation_mode=\$NAVM\"
             case \"\$NAVK:\$NAVM\" in 0:2|2:0|3:0) echo \"[UI Activator] WARNING: ColorOS nav key and AOSP navigation_mode disagree\" ;; esac
             $BB nsenter -t \$PID -m /system/bin/sh /data/oneos_genv.sh /system/bin/pm disable android.ext.services/android.ext.services.notification.Assistant 2>/dev/null || true
+            # 0.5.46 (Tab S9 FE+ d12ec9aa, ColorOS 17 Pad): ColorOS's setup (com.coloros.bootreg) arms an alarm on its
+            # GuidePage that powers the device off when it sits there (GuidePage\$AlarmReceiver: \"will try to shut down\",
+            # PowerManager.shutdown); it fired 13 and 16 min into two sessions and OneOS, as asked, powered the tablet off.
+            # That receiver is turned off; the setup itself stays. ONEOS_GUEST_BOOTREG_ALARM=1 keeps it.
+            if [ \"${ONEOS_GUEST_BOOTREG_ALARM:-0}\" != 1 ] &&
+               $BB nsenter -t \$PID -m /system/bin/sh /data/oneos_genv.sh /system/bin/pm disable 'com.coloros.bootreg/com.coloros.bootreg.settings.activity.GuidePage\$AlarmReceiver' >/dev/null 2>&1; then
+                echo \"[UI Activator] ColorOS setup: its power-off alarm (GuidePage\\\$AlarmReceiver) disabled\"
+            fi
+            # 0.5.48 (owner, S25 Ultra d55b55c3 on 0.5.44): One UI 9.5 froze the whole phone seconds after its setup's
+            # Bixby step (Bixby voice wake-up being set up); the chip's watchdog restarted it (TZBSP_ERR_FATAL_NON_SECURE_WDT).
+            # Bixby and its voice wake-up are turned off in the guest on the S25 Ultra (Snapdragon); ONEOS_GUEST_BIXBY=1 keeps them.
+            if [ \"${ONEOS_PROFILE:-}\" = s-ultra-8750 ] && [ \"${ONEOS_GUEST_BIXBY:-0}\" != 1 ]; then
+                for bx in com.samsung.android.bixby.wakeup com.samsung.android.bixby.agent; do
+                    $BB nsenter -t \$PID -m /system/bin/sh /data/oneos_genv.sh /system/bin/pm disable-user --user 0 \$bx >/dev/null 2>&1 &&
+                        echo \"[UI Activator] S25 Ultra: \$bx turned off (Bixby voice wake-up froze this phone)\"
+                done
+            fi
             # Fallback for a staged /data that had no settings files to seed, before
             # HOME: a fresh stage has none. Pixel's two setup wizards (ColorOS has
             # none) would take that first boot and wait for Google services.
@@ -2891,7 +2926,7 @@ while true; do
             for kv in 'global device_provisioned' 'secure user_setup_complete'; do
                 [ \"\$($BB nsenter -t \$PID -m /system/bin/sh /data/oneos_genv.sh /system/bin/settings get \$kv 2>/dev/null)\" = 1 ] || $BB nsenter -t \$PID -m /system/bin/sh /data/oneos_genv.sh /system/bin/settings put \$kv 1
             done
-            for p in com.google.android.setupwizard com.google.android.pixel.setupwizard; do
+            for p in com.google.android.setupwizard com.google.android.pixel.setupwizard$([ "$HOST_TAB_S9_FE" = 1 ] && echo ' org.lineageos.setupwizard'); do
                 $BB nsenter -t \$PID -m /system/bin/sh /data/oneos_genv.sh /system/bin/pm disable-user --user 0 \$p >/dev/null 2>&1 && echo \"[UI Activator] \$p disabled (setup is done in the container)\"
             done
             fi
@@ -3030,6 +3065,15 @@ while true; do
                     sleep 1
                     echo \"[UI Activator] CFMS stub: \$(head -n 1 $STAGE/cfms_stub.log 2>/dev/null | tr -d '\n' || true)\"
                 fi
+                # OPPO performance stand-in (0.5.49, the same class under another name): ColorOS's codecs
+                # and audioserver waited 2 x 5 s for vendor.oplus.hardware.performance.IPerformance/default
+                # on every sound start, so notification sounds, ringtones and alarms came 10 s late or not
+                # at all (Fold5 3e146336, S23 fb94d2c9). ColorOS/OxygenOS guests; ONEOS_GUEST_PERF_STUB=0: off.
+                if [ $GUEST_OPLUS = 1 ] && [ \"${ONEOS_GUEST_PERF_STUB:-1}\" = 1 ]; then
+                    ($BB nohup $BB nsenter -t \$PID -m /system/bin/sh /data/oneos_genv.sh /system/bin/env CLASSPATH=/data/oneos_edm_stub.dex /system/bin/app_process /system/bin OneOSCfmsStub \$PID vendor.oplus.hardware.performance.IPerformance/default vendor.oplus.hardware.performance.IPerformance > $STAGE/perf_stub.log 2>&1 </dev/null &)
+                    sleep 1
+                    echo \"[UI Activator] OPPO performance stub: \$(head -n 1 $STAGE/perf_stub.log 2>/dev/null | tr -d '\n' || true)\"
+                fi
                 # The Samsung camera service worker (patches/OneOSCameraWorker.java, in
                 # the same dex), which the One UI cameraserver also asks on every open:
                 # on the S25 Ultra firmware each connect waited 5 s for it and then
@@ -3056,7 +3100,9 @@ while true; do
             # On by default since 0.4.65 (F8U InfinityX run: Dolby on the music
             # output, sound much better); ONEOS_GUEST_DOLBY=0: off. Phones
             # whose effect HAL has no Dolby: it gives up after a minute, logged.
-            if [ \"${ONEOS_GUEST_DOLBY:-1}\" = 1 ] && [ -f $STAGE/OneOSEdmStub.dex ] && [ ! -L $STAGE/OneOSEdmStub.dex ]; then
+            # The Galaxy Tab S9 FE's One UI guests already run SoundAlive + Dolby_FX
+            # natively: no second output-mix effect there unless ONEOS_GUEST_DOLBY=1.
+            if [ \"${ONEOS_GUEST_DOLBY:-1}\" = 1 ] && { [ $HOST_TAB_S9_FE = 0 ] || [ -n \"${ONEOS_GUEST_DOLBY:-}\" ] || [ $GUEST_ONEUI = 0 ]; } && [ -f $STAGE/OneOSEdmStub.dex ] && [ ! -L $STAGE/OneOSEdmStub.dex ]; then
                 ($BB nohup $BB nsenter -t \$PID -m /system/bin/sh /data/oneos_genv.sh /system/bin/env CLASSPATH=/data/oneos_edm_stub.dex /system/bin/app_process /system/bin OneOSSoundFx \$PID > $STAGE/sound_fx.log 2>&1 </dev/null &)
                 sleep 3
                 echo \"[UI Activator] sound fx: \$(head -n 3 $STAGE/sound_fx.log 2>/dev/null | tr '\n' ' ' || true)\"
@@ -3077,6 +3123,22 @@ while true; do
                 ($BB nohup $BB nsenter -t \$PID -m /system/bin/sh /data/oneos_genv.sh /system/bin/env CLASSPATH=/data/oneos_edm_stub.dex /system/bin/app_process /system/bin OneOSScreenWatch \$PID > $STAGE/screen_watch.log 2>&1 </dev/null &)
                 sleep 1
                 echo \"[UI Activator] screen watch: \$(head -n 1 $STAGE/screen_watch.log 2>/dev/null || true)\"
+            fi
+            # HeyTap store kept off the CPU (0.5.51, owner; Fold5 ColorOS 9edcbd87: 43 C, the store app com.heytap.mall
+            # used 1-2 whole cores for minutes after it left the screen, its web page still drawing). ColorOS and
+            # OxygenOS: every 20 s, a store process with no store activity resumed on top (or the screen off) is
+            # force-stopped; opening the store again works as usual. ONEOS_GUEST_STORE_STOP=0: off.
+            if [ $GUEST_OPLUS = 1 ] && [ \"\${ONEOS_GUEST_STORE_STOP:-1}\" = 1 ]; then
+                ( n=0
+                  while kill -0 \$PID 2>/dev/null; do
+                      sleep 20
+                      pidof com.heytap.mall >/dev/null 2>&1 || continue
+                      top=\$($BB timeout 10 $BB nsenter -t \$PID -m /system/bin/sh /data/oneos_genv.sh /system/bin/dumpsys activity activities 2>/dev/null | grep -m 1 'topResumedActivity')
+                      case \"\$top\" in *com.heytap.mall/*) continue ;; esac
+                      $BB timeout 10 $BB nsenter -t \$PID -m /system/bin/sh /data/oneos_genv.sh /system/bin/am force-stop com.heytap.mall >/dev/null 2>&1
+                      n=\$((n + 1)); [ \$n -le 20 ] && echo \"\$(date +%T) HeyTap store stopped in the background (\$n)\" >> $STAGE/store_stop.log
+                  done ) </dev/null >/dev/null 2>&1 &
+                echo \"[UI Activator] HeyTap store: stopped whenever it leaves the screen (store_stop.log)\"
             fi
             # Knox provider stand-in (0.5.17), OxygenOS only: One UI's calling service died at every start
             # there (no com.sec.knox.provider2: A15, A16, A17 reports), so no SMS and no VoLTE. The guest app's
@@ -3686,6 +3748,23 @@ while true; do
                     *) echo \"[UI Activator] Nothing brightness overlay not made: \$r\" ;;
                 esac
             fi
+            # Wi-Fi-only Galaxy (Tab S9 FE SM-X510: ro.radio.noril=yes, ro.carrier=wifi-only): vendor ships
+            # DisableVoiceCapableOverlay (config_voice_capable=false) but phone images keep config_sms_capable
+            # and config_mobile_data_capable true, so TelephonyManager.getActiveModemCount() returns 1 while
+            # PhoneGlobals skips PhoneFactory.makeDefaultPhones() (no android.hardware.telephony feature).
+            # OplusPhoneGlobals.onCreate() then calls PhoneFactory.getPhone(0) and crash-loops com.android.phone
+            # every ~600 ms (burning CPU and triggering heat_cap throttling). Setting all three capability booleans
+            # false makes getActiveModemCount() return 0 so com.android.phone starts cleanly.
+            if [ $HOST_WIFI_ONLY = 1 ]; then
+                WOON=''
+                gxo fabricate --target android --name OneOSWifiOnlyVoice android:bool/config_voice_capable 0x12 0x0 &&
+                    gxo enable --user 0 com.android.shell:OneOSWifiOnlyVoice && WOON=\"\$WOON OneOSWifiOnlyVoice\"
+                gxo fabricate --target android --name OneOSWifiOnlySms android:bool/config_sms_capable 0x12 0x0 &&
+                    gxo enable --user 0 com.android.shell:OneOSWifiOnlySms && WOON=\"\$WOON OneOSWifiOnlySms\"
+                gxo fabricate --target android --name OneOSWifiOnlyData android:bool/config_mobile_data_capable 0x12 0x0 &&
+                    gxo enable --user 0 com.android.shell:OneOSWifiOnlyData && WOON=\"\$WOON OneOSWifiOnlyData\"
+                echo \"[UI Activator] Wi-Fi-only device: telephony capability overlays on:\${WOON:- none}\"
+            fi
             # The corner radius for the guests the block below leaves out (0.4.76,
             # host_corner_radius; see where the switch saves it): ColorOS on any
             # phone, every guest on a Fold. Made after the block.
@@ -3898,6 +3977,17 @@ while true; do
                     fi
                 fi
                 echo \"[UI Activator] status bar: One UI's cutout '\${HCS:-none}', as \$CUTU: '\${CUT:-none}', rect '\${CUTR:-none}'; height \${HSB:-?} px\${SBK:+ (\$HSBG px at the \${SBK% *} px the guest runs)}, corner radius \${HRCG:-?} px (One UI \${HRC:-?} px on the panel); overlays on:\${ON:- none}\${DIMS:+ (not made:\$DIMS)}\"
+            elif [ \"${ONEOS_GUEST_HOST_CUTOUT:-1}\" = 1 ] && [ -f $STAGE/host_no_cutout ] && [ ! -L $STAGE/host_no_cutout ]; then
+                # Single internal panel with no cutout (e.g. Tab S9 FE, camera in the bezel): override the
+                # phone image's display cutout so it does not reserve a phantom notch at the top of the screen.
+                NCON=''
+                gxo fabricate --target android --name OneOSCutout android:string/config_mainBuiltInDisplayCutout string ' ' &&
+                    gxo enable --user 0 com.android.shell:OneOSCutout && NCON=\"\$NCON OneOSCutout\"
+                gxo fabricate --target android --name OneOSCutoutRect android:string/config_mainBuiltInDisplayCutoutRectApproximation string ' ' &&
+                    gxo enable --user 0 com.android.shell:OneOSCutoutRect && NCON=\"\$NCON OneOSCutoutRect\"
+                gxo fabricate --target android --name OneOSCutoutFill android:bool/config_fillMainBuiltInDisplayCutout 0x12 0x0 &&
+                    gxo enable --user 0 com.android.shell:OneOSCutoutFill && NCON=\"\$NCON OneOSCutoutFill\"
+                echo \"[UI Activator] status bar: host panel has no cutout; cleared guest cutout overlays on:\${NCON:- none}\"
             else
                 # No host cutout this session (ONEOS_GUEST_HOST_CUTOUT=0, or a
                 # phone with two panels): an earlier session's overlays go off.
@@ -3906,7 +3996,7 @@ while true; do
                     case \$o in
                         OneOSCornerRadius) [ -n \"\$CRAD\" ] && continue
                             gxo disable --user 0 com.android.shell:\$o && OFF=\"\$OFF \$o\" ;;
-                        OneOSCutout|OneOSCutoutRect|OneOSStatusBarHeight|OneOSStatusBarTop|OneOSCornerPadding|OneOSNtStatusBar|OneOSNtPowerKey|OneOSIslandCenter)
+                        OneOSCutout|OneOSCutoutRect|OneOSCutoutFill|OneOSStatusBarHeight|OneOSStatusBarTop|OneOSCornerPadding|OneOSNtStatusBar|OneOSNtPowerKey|OneOSIslandCenter)
                             gxo disable --user 0 com.android.shell:\$o && OFF=\"\$OFF \$o\" ;;
                     esac
                 done
@@ -4442,6 +4532,8 @@ fi
 # $STAGE/cpu_top.log (collected with the stage's logs), the six busiest
 # processes over one second and the CPU totals (HyperOS run 11: 42-44 C skin
 # all session and nothing said which process kept the CPU busy).
+# 0.5.51 (owner: "Disable all logs when we are talking live"): not with Full session logs off.
+if [ "${ONEOS_FULL_LOGS:-1}" = 1 ]; then
 $BB sh -c "
     echo \$\$ > /sys/fs/cgroup/cgroup.procs 2>/dev/null
     F=$STAGE/diag_series.txt
@@ -4474,6 +4566,7 @@ $BB sh -c "
         sleep \$s
     done
 " </dev/null >/dev/null 2>&1 &
+fi
 echo "Session sampler: every 30 s to $STAGE/diag_series.txt"
 
 # Heat cap (S25 Ultra af6c2b17; owner 2026-10-27: cap only when hot). One UI's
@@ -4661,12 +4754,23 @@ if [ "$GUEST_OPLUS" != 1 ] && [ "${ONEOS_GUEST_SF_PIN:-1}" != 0 ] && [ -r /sys/c
             echo \"# \$(date +%T) stopped (the return started, or no guest namespace record) after \$kicks kicks\" >> \$F
             exit 0
         fi
-        hz=\$(cut -d' ' -f1 /sys/class/lcd/panel/vrr 2>/dev/null)
-        case \"\$hz\" in ''|*[!0-9]*) hz=0 ;; esac
-        on=0
-        for b in /sys/class/backlight/*/brightness; do
-            v=\$(cat \$b 2>/dev/null); case \"\$v\" in ''|*[!0-9]*) ;; 0) ;; *) on=1 ;; esac
+        # 0.5.51 (Z Fold7 HyperOS 23d6ebee: laggy folded, fine open): the panel that is lit is the one watched.
+        # The cover's panel1 sat at 24 Hz the whole folded session while the inner panel (read before) said 120.
+        # panel goes with panel0-backlight, panel1 with panel1-backlight; without those, the old reading.
+        hz=0; on=0; vp=panel
+        for p in panel panel1; do
+            [ -r /sys/class/lcd/\$p/vrr ] || continue
+            bl=/sys/class/backlight/\${p}-backlight; [ \$p = panel ] && bl=/sys/class/backlight/panel0-backlight
+            v=\$(cat \$bl/brightness 2>/dev/null); case \"\$v\" in ''|*[!0-9]*|0) continue ;; esac
+            on=1; vp=\$p; hz=\$(cut -d' ' -f1 /sys/class/lcd/\$p/vrr 2>/dev/null); break
         done
+        if [ \$on = 0 ]; then
+            hz=\$(cut -d' ' -f1 /sys/class/lcd/panel/vrr 2>/dev/null)
+            for b in /sys/class/backlight/*/brightness; do
+                v=\$(cat \$b 2>/dev/null); case \"\$v\" in ''|*[!0-9]*) ;; 0) ;; *) on=1 ;; esac
+            done
+        fi
+        case \"\$hz\" in ''|*[!0-9]*) hz=0 ;; esac
         if [ \$on = 1 ] && [ \$hz -gt 0 ] && [ \$hz -lt 48 ]; then low=\$((low + 1)); else low=0; fi
         # 0.5.15: also a panel left at 60 Hz under a guest whose active mode is 120 (A36 Nothing OS: the guest
         # started at its 120 Hz mode, so it never asked for a change, and the panel stayed in One UI's idle 60;
@@ -4685,7 +4789,7 @@ if [ "$GUEST_OPLUS" != 1 ] && [ "${ONEOS_GUEST_SF_PIN:-1}" != 0 ] && [ -r /sys/c
             [ -n \"\$P\" ] && out=\$(timeout 30 $BB nsenter -t \$P -m /system/bin/sh /data/oneos_genv.sh /system/bin/sh /data/oneos_sf_kick.sh 2>&1 | tr '\\n' ';' | cut -c1-400)
             kicks=\$((kicks + 1)); low=0; mis=0
             sleep 1
-            echo \"\$(date +%T) panel at \$hz Hz (guest mode \$sf Hz) with the screen on: \${out:-no guest system_server}; now \$(cut -d' ' -f1 /sys/class/lcd/panel/vrr 2>/dev/null) Hz\" >> \$F
+            echo \"\$(date +%T) \$vp at \$hz Hz (guest mode \$sf Hz) with the screen on: \${out:-no guest system_server}; now \$(cut -d' ' -f1 /sys/class/lcd/\$vp/vrr 2>/dev/null) Hz\" >> \$F
         fi
         sleep 15
     done
@@ -4758,6 +4862,8 @@ if [ "$RETURN_MAX" -gt 0 ]; then
                 # Only with ONEOS_LOGCAT=1, and only once: a capture that runs is left alone.
                 if [ -f $GUEST_FULLLOGS_REQ ] && [ ! -L $GUEST_FULLLOGS_REQ ]; then
                     rm -f $GUEST_FULLLOGS_REQ
+                    # 0.5.51: asked in the guest's app, the capture runs to the end (no 10-minute stop below).
+                    : > $STAGE/full_logs_keep
                     if [ \"${ONEOS_LOGCAT:-1}\" = 1 ] && ! pgrep -f '^logcat .*$LOGS/boot.log' >/dev/null 2>&1; then
                         mkdir -p $LOGS
                         if [ -f $STAGE/logcat_capture.sh ]; then
@@ -4822,20 +4928,48 @@ if [ "$RETURN_MAX" -gt 0 ]; then
                 exec /system/bin/sh $STAGE/return_to_oneui.sh
             fi
             if [ -n \"\$req\" ]; then
+                # 0.5.51 (owner, A36 Nothing OS: left on its setup screen, found powered off; 'shutdown' with the
+                # screen off, no line from the guarded ShutdownThread): a guest shutdown while its screen is off is
+                # nobody's Power off. It returns to One UI and the phone stays on ('asleep:shutdown' is not
+                # shutdown* for return_to_oneui.sh). Off: no panel lit (drm dpms On, a backlight above 0), or the
+                # guest asleep on its AOD (oneos_dt2w_aod = 1). The guest's logs from that moment are kept in
+                # powerctl_request.log (the shutdown line was missing from the capture). ONEOS_GUEST_SHUTDOWN_ASLEEP=off
+                # powers off as before.
+                case \"\$req\" in
+                    shutdown*)
+                        lit=0
+                        for d in /sys/class/drm/card0-*/dpms; do [ \"\$(cat \$d 2>/dev/null)\" = On ] && lit=1; done
+                        for b in /sys/class/backlight/*/brightness; do v=\$(cat \$b 2>/dev/null); case \"\$v\" in ''|*[!0-9]*|0) ;; *) lit=1 ;; esac; done
+                        [ \"\$(cat $STAGE/data/oneos_dt2w_aod 2>/dev/null)\" = 1 ] && lit=0
+                        SFP=\$(pidof surfaceflinger | awk '{print \$1}')
+                        { echo \"\$(date) guest request '\$req', screen lit=\$lit\"
+                          [ -n \"\$SFP\" ] && timeout 5 $BB nsenter -t \$SFP -m /system/bin/sh /data/oneos_genv.sh /system/bin/logcat -d -b all -t 3000 2>/dev/null
+                        } > $STAGE/powerctl_request.log 2>&1
+                        if [ \$lit = 0 ] && [ \"\${ONEOS_GUEST_SHUTDOWN_ASLEEP:-stay}\" != off ]; then
+                            req=\"asleep:\$req\"; setprop oneos.guest.powerctl \"\$req\"
+                            echo \"\$(date) the guest asked to shut down with its screen off: returning to One UI, the phone stays on\"
+                        fi ;;
+                esac
                 echo \"\$(date) guest requested '\$req' after \${total}s, returning to One UI\"
                 # Who asked: the guarded ShutdownThread logs under the tag OneOS (run
                 # 31 was Restart in ColorOS's power menu, seen only in the recording).
                 # 0.4.87: the system buffer on its own. Read together with main, a busy
                 # camera filled the 4000 lines within the second and nothing was printed
                 # (S24 Ultra e99b8eae: 'shutdown' with the camera at full zoom, asker unknown).
-                timeout 5 logcat -d -b system -t 3000 2>/dev/null | grep -E ' OneOS|ShutdownThread|ShutdownActivity|GlobalActions|RescueParty|PowerManagerService.*[Rr]eboot|[Ss]hut ?down|[Oo]verheat|[Hh]igh ?[Tt]emp' | tail -15
+                # 0.5.45: printed nothing on the Tab S9 FE+ (0dbe56e0, ColorOS 'shutdown' 30 min in, twice): the
+                # guest's own logcat (its logd, in its mount namespace) first, the system and main buffers.
+                WHO='ShutdownThread|ShutdownActivity|GlobalActions|RescueParty|PowerManagerService.*([Rr]eboot|[Ss]hutdown|goToSleep)|[Ss]hut ?down|[Pp]ower ?[Oo]ff|[Oo]verheat|[Hh]igh ?[Tt]emp|[Ll]ow ?[Bb]att'
+                SFP=\$(pidof surfaceflinger | awk '{print \$1}')
+                a=''
+                [ -n \"\$SFP\" ] && a=\$(timeout 5 $BB nsenter -t \$SFP -m /system/bin/sh /data/oneos_genv.sh /system/bin/logcat -d -b system,main -t 6000 2>/dev/null | grep -E \" OneOS|\$WHO\" | tail -n 20)
+                [ -n \"\$a\" ] || a=\$(timeout 5 logcat -d -b system -t 3000 2>/dev/null | grep -E \" OneOS|\$WHO\" | tail -n 15)
+                echo \"\${a:-who asked: no line in the guest's or One UI's log}\"
                 # The guest's thermal and battery services can ask for a shutdown
                 # without a line in the log: what they hold now, 5 s each at most.
                 # Not after the user's own return (app, keys) or a soft reboot.
                 case \"\$req\" in
                     app:*|keys:*|ksud:*) ;;
                     *)
-                        SFP=\$(pidof surfaceflinger | awk '{print \$1}')
                         if [ -n \"\$SFP\" ]; then
                             a=\$(timeout 5 $BB nsenter -t \$SFP -m /system/bin/sh /data/oneos_genv.sh /system/bin/dumpsys thermalservice 2>/dev/null | grep -o -E 'Thermal Status: [0-9]+|Temperature[{][^}]*mStatus=[1-6][}]' | head -n 12 | tr '\n' ' ')
                             echo \"guest thermal service: \${a:-no answer}\"
@@ -4867,8 +5001,20 @@ if [ "$RETURN_MAX" -gt 0 ]; then
             # boot at run 44's rates, 192 MiB at most) get a second name in
             # $LOGS/head: hard links, no copy, and no space used until the
             # rotation deletes their first name. This session's capture only.
+            # 0.5.51 (owner: people complain about heat and lag): the full capture keeps the session's first 10
+            # minutes (boot and most crashes) and then stops; logd and logcat drew about a fifth of a core all
+            # session (A36 Nothing OS: smoother at once without it). Full session logs in the guest's OneOS app
+            # (shown off again from here) records again until the end. ONEOS_FULL_LOGS_SECONDS (0: no stop).
+            if [ $LOGCAT_HEAD = 1 ] && [ ${ONEOS_FULL_LOGS_SECONDS:-600} -gt 0 ] && [ \$total -ge ${ONEOS_FULL_LOGS_SECONDS:-600} ] &&
+               [ ! -f $STAGE/full_logs_keep ] && [ ! -f $STAGE/logcat_cut ]; then
+                : > $STAGE/logcat_cut
+                for lp in \$(pgrep -f \"^logcat .*$LOGS/boot.log\" 2>/dev/null); do kill \$lp 2>/dev/null; done
+                [ -d $STAGE/data/oneos_bootui ] && echo 0 > $FULLLOGS_STATE && chmod 644 $FULLLOGS_STATE
+                echo \"\$(date) logcat capture stopped after \${total}s: the first ${ONEOS_FULL_LOGS_SECONDS:-600} s are kept (Full session logs in the guest's OneOS app records again)\"
+            fi
             # The capture ended early (0.5.20, see where it starts): started again, appending to its file.
-            if [ $LOGCAT_HEAD = 1 ] && [ -n \"\$dname\" ] && [ -f $STAGE/logcat_capture.sh ] && ! pgrep -f \"^logcat .*$LOGS/boot.log\" >/dev/null 2>&1; then
+            if [ $LOGCAT_HEAD = 1 ] && [ -n \"\$dname\" ] && [ -f $STAGE/logcat_capture.sh ] && ! pgrep -f \"^logcat .*$LOGS/boot.log\" >/dev/null 2>&1 &&
+               { [ ! -f $STAGE/logcat_cut ] || [ -f $STAGE/full_logs_keep ]; }; then
                 mkdir -p $LOGS
                 $BB setsid sh $STAGE/logcat_capture.sh </dev/null >/dev/null 2>&1 &
                 echo \"\$(date) logcat capture had ended: started again\"
@@ -4891,6 +5037,12 @@ if [ "$RETURN_MAX" -gt 0 ]; then
                     # android.system.vold.IVold/default, the guest's is gvld (run 44).
                     { for n in vold android.system.vold.IVold/default gvld; do echo \"\$n: \$(timeout 5 dumpsys --pid \$n 2>&1 | head -n 1)\"; done
                       echo \"init.svc_debug_pid.vold: \$(getprop init.svc_debug_pid.vold)\"; } > \$D/vold_names.txt
+                    # 0.5.52: where the space goes (A35 Moumin367: ~3 GB per switch, ~25 GB gone, Free up space showed
+                    # no old copies): /data's use and the largest OneOS folders, once a session, on /data only (-x:
+                    # the image mounts are not counted), at low priority.
+                    if [ \"\$dname\" = 90 ]; then
+                        { $BB df -k /data; nice -n 19 timeout 120 $BB du -xk -d 2 /data/local/tmp 2>/dev/null | sort -rn | head -n 40; } > \$D/storage.txt 2>&1
+                    fi
                     timeout 15 $BB nsenter -t \$SFP -m /system/bin/sh /data/oneos_genv.sh /system/bin/dumpsys SurfaceFlinger > \$D/surfaceflinger.txt 2>&1
                     timeout 15 $BB nsenter -t \$SFP -m /system/bin/sh /data/oneos_genv.sh /system/bin/dumpsys display > \$D/display.txt 2>&1
                     for id in \$(grep -o 'Display [0-9]\\{6,\\}' \$D/surfaceflinger.txt | awk '{print \$2}' | sort -u); do

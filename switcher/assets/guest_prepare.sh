@@ -92,7 +92,7 @@ for need in services_patched.jar $(awk '$2 == "oplus-services_patched.jar" || $2
                                         $2 == "framework_patched.jar" || $2 == "miui-wifi-service_patched.jar" || $2 == "miui-telephony-common_patched.jar" ||
                                         $2 == "libcamera_client_patched.so" || $2 == "libcameracompatbilityinfo_patched.so" ||
                                         $2 == "framework_patched_oneui95.jar" || $2 == "libcamera_client_patched_oneui95.so" ||
-                                        $2 == "framework_patched_oneui8.jar" ||
+                                        $2 == "framework_patched_oneui8.jar" || $2 == "framework_patched_oneui85.jar" ||
                                         $2 == "libsurfaceflinger_patched.so" || $2 == "telephony-common_patched.jar" ||
                                         $2 == "vivo-services_patched.jar" || $2 == "vivo-telephony-common-platform-ex_patched.jar" ||
                                         $2 == "oplus-framework_patched.jar" { print $2 }' "$STAGE/guards.txt"); do
@@ -491,27 +491,47 @@ fi
 A17_ON_A16=0
 A16_CAMERA=0
 rm -f "$STAGE/a16_camera_on"
-if [ "$(getprop ro.build.version.sdk)" = 36 ] && grep -q '^ro.build.version.oneui=' "$ROOTFS/system/build.prop" 2>/dev/null &&
+# 0.5.51 (owner: ColorOS 17 for the S22s too): also another Android 17 image whose set brings the image's own
+# Android 17 modules for a One UI 8 phone (x9u-in-1105-a16: uprobestats_payload.img and the rest, the
+# connectivity library, One UI 8's camera codes). Other Android 17 images on Android 16 phones (OxygenOS 17 Pad
+# on the tablets) keep their own way, unchanged.
+if [ "$(getprop ro.build.version.sdk)" = 36 ] &&
+   { grep -q '^ro.build.version.oneui=' "$ROOTFS/system/build.prop" 2>/dev/null || [ -f "$STAGE/uprobestats_payload.img" ]; } &&
    [ "$(sed -n 's/^ro.build.version.sdk=//p' "$ROOTFS/system/build.prop" 2>/dev/null | tail -n 1)" = 37 ]; then
     A17_ON_A16=1
     # 0.5.39: a set with framework_patched_oneui8.jar (patches/a16_camera.py: the same jar with One UI 8's
     # camera codes, switcher/patches/host_camera_oneui8.txt, read on the S22 Ultra) turns the camera on:
     # bound in place of framework_patched.jar, the image's Samsung Camera kept, config.disable_cameraservice
     # not set (guest_props.sh reads $STAGE/a16_camera_on). ONEOS_A16_CAMERA=0 keeps it off.
-    if [ -f "$STAGE/framework_patched_oneui8.jar" ] && [ "${ONEOS_A16_CAMERA:-1}" = 1 ] &&
-       awk '$2 == "framework_patched_oneui8.jar" { f = 1 } END { exit !f }' "$STAGE/guards.txt"; then
+    # 0.5.45: One UI 8.5 (S23 FE 8a093c12, A35 5434447d) is Android 16 QPR2: its cameraserver takes One UI 9.0's
+    # CameraCompatibilityInfo where One UI 8 has the int, so the One UI 8 jar's calls failed there (a
+    # NullPointerException on every getCameraCharacteristics; Samsung's video call engine restarted ~2,000 times).
+    # framework_patched_oneui85.jar (host_camera_oneui85.txt) on such a phone; without it the camera stays off.
+    A16_OUI=$(getprop ro.build.version.oneui); case "$A16_OUI" in ''|*[!0-9]*) A16_OUI=0 ;; esac
+    A16_JAR=framework_patched_oneui8.jar; A16_NAME="One UI 8"
+    [ "$A16_OUI" -ge 80500 ] && A16_JAR=framework_patched_oneui85.jar && A16_NAME="One UI 8.5"
+    if [ -f "$STAGE/$A16_JAR" ] && [ "${ONEOS_A16_CAMERA:-1}" = 1 ] &&
+       awk -v j="$A16_JAR" '$2 == j { f = 1 } END { exit !f }' "$STAGE/guards.txt"; then
         A16_CAMERA=1
-        CAM_FW=framework_patched_oneui8.jar
+        CAM_FW=$A16_JAR
         : > "$STAGE/a16_camera_on"
-        echo "Experimental One UI 9.5 on One UI 8 (SDK 36): camera on, One UI 8's camera codes (framework_patched_oneui8.jar)"
+        echo "Experimental One UI 9.5 on One UI 8 (SDK 36, One UI $A16_OUI): camera on, $A16_NAME's camera codes ($A16_JAR)"
     else
-        echo "Experimental One UI 9.5 on One UI 8 (SDK 36): camera off"
+        echo "Experimental One UI 9.5 on One UI 8 (SDK 36, One UI $A16_OUI): camera off (no $A16_JAR in this set)"
     fi
 fi
 # The boot splash (OneOSBootStatus) runs on One UI 8's runtime while the session's SDK prop says 37: it
 # draws the icon only when this marker is there (oneui8test13; its font map load aborts on Android 16).
 rm -f "$STAGE/data/oneos_a17_on_a16"
 [ "$A17_ON_A16" = 1 ] && mkdir -p "$STAGE/data" && : > "$STAGE/data/oneos_a17_on_a16"
+# The Galaxy Tab S9 FE (pull request #371): everything its support adds runs only here. TAB_S9_FE_HOST is the
+# tablet with any system; ONEUI95_TAB_S9_FE the tablet on a One UI 9.5 image.
+TAB_S9_FE_HOST=0
+case "${ONEOS_PROFILE:-}:$(getprop ro.product.model)" in
+    tab-s9-fe:*|tab-s9-fe-5g:*|*:SM-X51*) TAB_S9_FE_HOST=1 ;;
+esac
+ONEUI95_TAB_S9_FE=0
+[ "$ONEUI95_IMAGE" = 1 ] && [ "$TAB_S9_FE_HOST" = 1 ] && ONEUI95_TAB_S9_FE=1
 for d in "$GUEST_SYSTEM_EXT" "$GUEST_PRODUCT"; do
     if [ -L "$d" ] || [ ! -d "$d" ]; then
         echo "ERROR: ${d#$ROOTFS/} in the guest image is a link or missing (system_ext and product: one real folder each); not starting the guest"
@@ -782,6 +802,12 @@ if [ "${ONEOS_GUEST_SEC_IMS:-0}" = 1 ]; then
     # 260 crashes in 10 minutes with a dump each, three cores busy, the phone throttling).
     elif grep -q '^ro.build.version.oneui=' "$ROOTFS/system/build.prop" 2>/dev/null; then
         sec_ims_off "this system is a One UI image with its own Samsung IMS"
+    # A Wi-Fi-only Galaxy (Tab S9 FE SM-X510: ro.radio.noril=yes, ro.carrier=wifi-only, no rild or
+    # libsec-ril.so) has no modem for IMS to reach; the guest's com.sec.imsservice still bound and died in
+    # a loop (NoSuchFieldError Build$VERSION.SEM_INT under OxygenOS 16, about one crash a second).
+    elif [ "$(getprop ro.radio.noril)" = yes ] || [ "$(getprop ro.radio.noril)" = true ] || [ "$(getprop ro.radio.noril)" = 1 ] || \
+         [ "$(getprop ro.carrier)" = wifi-only ]; then
+        sec_ims_off "this device is Wi-Fi only (ro.radio.noril=$(getprop ro.radio.noril), ro.carrier=$(getprop ro.carrier)): no modem for IMS"
     elif [ -L "$SECIMS" ]; then echo "ERROR: $SECIMS is a symlink; not starting the guest"; exit 3
     # Only the sets whose services.jar carries the carve-out can keep the
     # Samsung-signed package in android.uid.system; on the others the guest's
@@ -842,7 +868,7 @@ fi
 # A36's One UI 9) where the set has one: the flagship's camera on an A phone's sensors needed the crop,
 # mode and resolution fixes (fix_a_series_*.py) and still failed in 7 of 14 A36 ColorOS reports.
 case "$(getprop ro.product.model)" in
-    SM-A*|SM-M*)
+    SM-A*|SM-M*|SM-X51*)
         if [ -f "$STAGE/samcam_a.tar" ] && [ ! -L "$STAGE/samcam_a.tar" ]; then SAMCAM_TAR="$STAGE/samcam_a.tar"; fi ;;
 esac
 SAMCAM_IMAGE=0
@@ -1083,10 +1109,17 @@ samcam_prepare() {
     for pair in ai_clear_zoom:libdtsr_wrapper_v1.camera.samsung.so; do
         [ -e "/system/lib64/${pair#*:}" ] || [ -e "$SAMCAM_SRC/${pair#*:}" ] || ff_drop="$ff_drop ${pair%%:*}"
     done
-    if [ "${ONEOS_GUEST_SAMCAM_NODE_FILTER:-1}" = 1 ] && [ -n "$ff_drop" ] &&
+    # 0.5.51 (S22 Ultra Exynos One UI 8 e24e6495): One UI 8 lists image_codec.samsung.v1; the S26 Ultra camera
+    # knows only image_codec.samsung.v2, calls v1 an invalid node feature name, and then ImageCodecDummyNode
+    # threw "need to check nodeFeature(image_codec) in VENDOR_LIB_INFO" at every start (the camera closed). The
+    # entry is renamed for the guest's copy ("old=new" pairs).
+    ff_ren=""
+    grep -q 'image_codec\.samsung\.v1' "$SAMCAM_FF" 2>/dev/null && ff_ren="image_codec.samsung.v1=image_codec.samsung.v2"
+    if [ "${ONEOS_GUEST_SAMCAM_NODE_FILTER:-1}" = 1 ] && [ -n "$ff_drop$ff_ren" ] &&
        grep -q '<SEC_FLOATING_FEATURE_CAMERA_CONFIG_VENDOR_LIB_INFO>' "$SAMCAM_FF" 2>/dev/null; then
-        if awk -v drop="$ff_drop" '
-            BEGIN { n = split(drop, d, " "); for (i = 1; i <= n; i++) if (d[i] != "") gone[d[i]] = 1 }
+        if awk -v drop="$ff_drop" -v ren="$ff_ren" '
+            BEGIN { n = split(drop, d, " "); for (i = 1; i <= n; i++) if (d[i] != "") gone[d[i]] = 1
+                    n = split(ren, r, " "); for (i = 1; i <= n; i++) { split(r[i], kv, "="); if (kv[1] != "") to[kv[1]] = kv[2] } }
             {
                 k = "<SEC_FLOATING_FEATURE_CAMERA_CONFIG_VENDOR_LIB_INFO>"
                 if ((s = index($0, k)) > 0 && (e = index($0, "</SEC_FLOATING_FEATURE_CAMERA_CONFIG_VENDOR_LIB_INFO>")) > s) {
@@ -1095,6 +1128,7 @@ samcam_prepare() {
                         x = a[i]; gsub(/^[ \t]+|[ \t]+$/, "", x); f = x; sub(/\..*/, "", f)
                         if (x == "") continue
                         if (f in gone) { cut = cut (cut == "" ? "" : ",") x; continue }
+                        if (x in to) { cut = cut (cut == "" ? "" : ",") x "->" to[x]; x = to[x] }
                         out = out (out == "" ? "" : ",") x
                     }
                     print substr($0, 1, s + length(k) - 1) out substr($0, e)
@@ -1106,7 +1140,7 @@ samcam_prepare() {
            grep -q '</SecFloatingFeatureSet>' "$SAMCAM_SRC/oneos-samcam-floating_feature.xml" &&
            [ -s "$STAGE/samcam_ff_cut.txt" ]; then
             SAMCAM_FF="$SAMCAM_SRC/oneos-samcam-floating_feature.xml"
-            echo "Samsung Camera: node features without their library on this phone left out: $(cat "$STAGE/samcam_ff_cut.txt")"
+            echo "Samsung Camera: node features left out (no library on this phone) or renamed for this camera: $(cat "$STAGE/samcam_ff_cut.txt")"
         else
             rm -f "$SAMCAM_SRC/oneos-samcam-floating_feature.xml"
         fi
@@ -1207,6 +1241,82 @@ samcam_bind() {
     echo "Samsung Camera in the guest: $n files and folders bound onto $2 $(date +%T)"
     return 0
 }
+# farm_dir <target> <work dir> <entry>...: <target>'s top level as a tmpfs copy
+# with the image's entries bound back and empty mount points <entry> added (a
+# name ending in / is a folder, others empty files). Echoes nothing; status 0
+# when every entry is in place, else everything it made is taken back.
+farm_dir() {
+    fd_t=$1; fd_w=$2; shift 2
+    fd_f="$fd_w/farm"; fd_o="$fd_w/orig"
+    $BB umount -l "$fd_f" 2>/dev/null; $BB umount -l "$fd_o" 2>/dev/null
+    mkdir -p "$fd_f" "$fd_o" && $BB mount -t tmpfs -o size=256k,mode=755 tmpfs "$fd_f" || return 1
+    for fd_e in "$fd_t"/* "$fd_t"/.[!.]*; do
+        [ -e "$fd_e" ] || [ -L "$fd_e" ] || continue
+        fd_n=${fd_e##*/}
+        if [ -L "$fd_e" ]; then cp -P "$fd_e" "$fd_f/$fd_n"
+        elif [ -d "$fd_e" ]; then mkdir "$fd_f/$fd_n"
+        else : > "$fd_f/$fd_n"; fi || { $BB umount -l "$fd_f"; return 1; }
+    done
+    for fd_e in "$@"; do
+        case "$fd_e" in */) mkdir -p "$fd_f/${fd_e%/}" ;; *) : > "$fd_f/$fd_e" ;; esac || { $BB umount -l "$fd_f"; return 1; }
+    done
+    chmod 755 "$fd_f"; $BB chcon -R u:object_r:system_file:s0 "$fd_f" 2>/dev/null
+    # 0.5.51: the copy's own folder labelled as the image's (system/lib64 is system_lib_file).
+    fd_c=$(ls -Zd "$fd_t" 2>/dev/null | awk '{print $1}')
+    case "$fd_c" in u:object_r:*) $BB chcon "$fd_c" "$fd_f" 2>/dev/null ;; esac
+    # Recursive (oneui8test9): what is already mounted inside an entry comes along with it.
+    $BB mount --rbind "$fd_t" "$fd_o" || { $BB umount -l "$fd_f"; return 1; }
+    # Private before the farm goes over the target: a shared bind would show the farm here too.
+    $BB mount --make-rprivate "$fd_o" || { $BB umount -l "$fd_o"; $BB umount -l "$fd_f"; return 1; }
+    $BB mount --bind "$fd_f" "$fd_t" || { $BB umount -l "$fd_o"; $BB umount -l "$fd_f"; return 1; }
+    for fd_e in "$fd_o"/* "$fd_o"/.[!.]*; do
+        [ -e "$fd_e" ] && [ ! -L "$fd_e" ] || continue
+        $BB mount --rbind "$fd_e" "$fd_t/${fd_e##*/}" || {
+            awk -v r="$fd_t/" 'index($2, r) == 1 {print $2}' /proc/mounts | sort -r | while read -r m; do $BB umount -l "$m"; done
+            $BB umount -l "$fd_t"; $BB umount -l "$fd_o"; $BB umount -l "$fd_f"; return 1
+        }
+    done
+    $BB mount -o remount,ro "$fd_f" 2>/dev/null
+    return 0
+}
+# merge_up <layer> <target> <work dir>: what a read-only overlay "lowerdir=<layer>:<target>" would show, for the
+# android12-5.10 kernels (S22 series, S23 FE, A25, A33, A53) that refuse overlayfs on the guest's /system and
+# system_ext ("Operation not supported on transport endpoint"). Every entry of <layer> that <target> lacks gets
+# its mount point: the deepest folder of <target> that exists is made a farm (farm_dir) with the missing names in
+# it, shallow folders first. Files of <layer> with content (feature lists) are then bound onto theirs; empty ones
+# are mount points for later binds (Samsung Camera). Status 1 when anything failed; the caller takes back what
+# is mounted under <target>. 0.5.51 (owner: Samsung Camera for ColorOS on the S22s; abhera's S22 Ultra:
+# "Samsung Camera in the guest: off (overlay on .../system refused)").
+merge_up() {
+    mu_u=$1 mu_t=$2 mu_w=$3
+    $BB mkdir -p "$mu_w" || return 1
+    ( cd "$mu_u" && find . -mindepth 1 \( -type f -o -type d \) ) | sed 's|^\./||' > "$mu_w/layer" || return 1
+    : > "$mu_w/groups"; : > "$mu_w/made"
+    while read -r mu_r; do
+        [ -n "$mu_r" ] || continue
+        [ -e "$mu_t/$mu_r" ] && continue
+        case "$mu_r" in */*) mu_d=${mu_r%/*} ;; *) mu_d=. ;; esac
+        while [ "$mu_d" != . ] && [ ! -d "$mu_t/$mu_d" ]; do
+            case "$mu_d" in */*) mu_d=${mu_d%/*} ;; *) mu_d=. ;; esac
+        done
+        if [ "$mu_d" = . ]; then mu_n=$mu_r; else mu_n=${mu_r#"$mu_d"/}; fi
+        if [ -d "$mu_u/$mu_r" ]; then mu_n="$mu_n/"; else echo "$mu_r" >> "$mu_w/made"; fi
+        echo "$mu_d $mu_n" >> "$mu_w/groups"
+    done < "$mu_w/layer"
+    mu_i=0
+    for mu_d in $(awk '{ n = gsub("/", "/", $1); if ($1 == ".") n = -1; if (!s[$1]++) print n, $1 }' "$mu_w/groups" | sort -n -s -k1,1 | awk '{print $2}'); do
+        mu_i=$((mu_i + 1))
+        if [ "$mu_d" = . ]; then mu_p=$mu_t; else mu_p=$mu_t/$mu_d; fi
+        # shellcheck disable=SC2046
+        farm_dir "$mu_p" "$mu_w/f$mu_i" $(awk -v d="$mu_d" '$1 == d {print $2}' "$mu_w/groups") || return 1
+    done
+    while read -r mu_r; do
+        [ -s "$mu_u/$mu_r" ] || continue
+        $BB mount --bind "$mu_u/$mu_r" "$mu_t/$mu_r" || return 1
+    done < "$mu_w/made"
+    echo "$mu_i"
+    return 0
+}
 # Add the missing guest su mount point to an overlay before its read-only
 # system view is mounted. Modern guest images need not ship /system/xbin.
 guest_root_mountpoint() {
@@ -1255,8 +1365,19 @@ elif [ -d "$SAMCAM_SRC" ] && [ "${ONEOS_GUEST_SAMSUNG_CAMERA:-1}" = 1 ]; then
                 awk -v r="$ROOTFS/system/" 'index($2, r) == 1 {print $2}' /proc/mounts | sort -r | while read -r m; do $BB umount -l "$m"; done
                 $BB umount -l "$ROOTFS/system" 2>/dev/null || true
             fi
+        # coloros22test10: off unless ONEOS_MERGE_UP=1. On test 9 ColorOS no longer started on the S22s (S22 Ultra
+        # tomindabuilding 23ad5f08, abhera, Exynos S22 Homak: black screen): the guest's surfaceflinger, bootanimation
+        # and vold stopped at "CANNOT LINK ... library not found" (vendor.qti.hardware.display.composer@3.0.so,
+        # libimmlistservice.so, libcommon_dcs_service.so) with these bound copies in place. Cause not found yet.
+        elif [ "${ONEOS_MERGE_UP:-0}" = 1 ] && SMN=$(merge_up "$SOV/up" "$ROOTFS/system" "$STAGE/samcam_merge") && samcam_bind sys "$ROOTFS/system"; then
+            # android12-5.10 kernels (the S22 series on One UI 8): no overlayfs here, so the same mount points
+            # (and the layer's feature files and xbin) in bound copies of the folders that lack them.
+            SAMCAM=1
+            echo "Samsung Camera: no overlayfs on this kernel; its mount points in bound copies of $SMN folder(s) of $ROOTFS/system"
         else
-            echo "Samsung Camera in the guest: off (overlay on $ROOTFS/system refused)"
+            awk -v r="$ROOTFS/system/" 'index($2, r) == 1 {print $2}' /proc/mounts | sort -r | while read -r m; do $BB umount -l "$m"; done
+            grep -q " $ROOTFS/system tmpfs " /proc/mounts && $BB umount -l "$ROOTFS/system"
+            echo "Samsung Camera in the guest: off (overlay on $ROOTFS/system refused, and the bound copies failed)"
         fi
     else echo "Samsung Camera in the guest: off (staged files or One UI's camera files missing)"
     fi
@@ -1329,12 +1450,83 @@ if [ "$BIO_FEATURES" = 1 ] && [ ! -e "$ROOTFS/system/etc/permissions/android.har
         if rm -rf "$BFO/up" && mkdir -p "$BFO/up" && bio_features_into "$BFO/up" &&
            $BB mount -t overlay overlay -o "ro,lowerdir=$BFO/up:$ROOTFS/system" "$ROOTFS/system"; then
             echo "Biometric features: fingerprint and face declared in a private /system layer"
+        elif [ "${ONEOS_MERGE_UP:-0}" = 1 ] && [ -d "$BFO/up/etc/permissions" ] && BFN=$(merge_up "$BFO/up" "$ROOTFS/system" "$STAGE/bio_features_merge"); then
+            # 0.5.51: android12-5.10 kernels (the S22 series on One UI 8) refuse that overlay; the two feature
+            # files bound into a copy of etc/permissions instead.
+            echo "Biometric features: fingerprint and face declared in a bound copy of $BFN folder(s) (no overlayfs on this kernel)"
         else
+            # A failed farm_dir takes back its own mounts; copies made before it only mirror the image.
             echo "Biometric features: the private /system layer was refused; no fingerprint or face settings"
         fi
     fi
 elif [ "$BIO_FEATURES" = 1 ]; then
     echo "Biometric features: fingerprint and face declared"
+fi
+# 1) One UI images on HIDL VaultKeeper hosts (e.g. Tab S9 FE, vendor API 33): the host only runs
+#    HIDL vendor.samsung.hardware.security.vaultkeeper@2.0::ISehVaultKeeper/default, whereas One UI
+#    9.5's libvkmanager.so blocks forever in AServiceManager_waitForService on AIDL
+#    vendor.samsung.hardware.security.vaultkeeper.ISehVaultKeeper/default — deadlocking
+#    com.android.bluetooth in BLE_TURNING_ON.
+# 2) One UI images whose SoundBooster engine (e.g. v2090) rejects the host's SoundBoosterParam.txt
+#    format (v1.13: "SoundBooster_v20 Param mismatch" -> bypass): supply the host's matching
+#    libsamsungSoundbooster_plus_legacy.so + lib_SoundBooster_ver*.so, and whiteout guest-only
+#    libsoundboostereq_legacy.so when absent on the host so speaker DSP runs cleanly.
+# Supply via a single private read-only overlay on $ROOTFS/system/lib64 before any later lib64 submounts.
+VK_HIDL_OV=0
+NEED_VK=0
+NEED_SB=0
+SB_HIDE_EQ=0
+HSB_VER=""
+if [ "$TAB_S9_FE_HOST" = 1 ] && grep -q '^ro.build.version.oneui=' "$ROOTFS/system/build.prop" 2>/dev/null; then
+    if [ "${ONEOS_ONEUI_HOST_VKMANAGER:-1}" = 1 ] &&
+       [ -f "$ROOTFS/system/lib64/libvkmanager.so" ] && [ -f /system/lib64/libvkmanager.so ] &&
+       [ -f /system/lib64/vendor.samsung.hardware.security.vaultkeeper@2.0.so ] &&
+       grep -q 'ISehVaultKeeper/default' "$ROOTFS/system/lib64/libvkmanager.so" 2>/dev/null &&
+       grep -q 'vaultkeeper@2\.0' /system/lib64/libvkmanager.so 2>/dev/null; then
+        NEED_VK=1
+    fi
+    if [ "${ONEOS_ONEUI_HOST_SOUNDBOOSTER:-1}" = 1 ] &&
+       [ -f "$ROOTFS/system/lib64/libsamsungSoundbooster_plus_legacy.so" ] &&
+       [ -f /system/lib64/libsamsungSoundbooster_plus_legacy.so ]; then
+        for f in /system/lib64/lib_SoundBooster_ver*.so; do
+            [ -f "$f" ] && { HSB_VER="$f"; break; }
+        done
+        GSB_VER=""
+        for f in "$ROOTFS"/system/lib64/lib_SoundBooster_ver*.so; do
+            [ -f "$f" ] && { GSB_VER="$f"; break; }
+        done
+        if [ -n "$HSB_VER" ] && [ "${HSB_VER##*/}" != "${GSB_VER##*/}" ]; then
+            NEED_SB=1
+            if [ ! -e /system/lib64/libsoundboostereq_legacy.so ] && [ -e "$ROOTFS/system/lib64/libsoundboostereq_legacy.so" ]; then
+                SB_HIDE_EQ=1
+            fi
+        fi
+    fi
+fi
+if [ "$NEED_VK" = 1 ] || [ "$NEED_SB" = 1 ]; then
+    VKO="$STAGE/vk_lib64_ov"
+    if [ ! -L "$VKO" ]; then
+        mkdir -p "$VKO"
+        mount | grep -q " $VKO " || { $BB mount -t tmpfs -o size=4m,mode=755 tmpfs "$VKO" && $BB mount --make-private "$VKO" 2>/dev/null; }
+        if rm -rf "$VKO/up" && mkdir -p "$VKO/up" &&
+           { [ "$NEED_VK" = 0 ] || cp /system/lib64/libvkmanager.so /system/lib64/vendor.samsung.hardware.security.vaultkeeper@2.0.so "$VKO/up/"; } &&
+           { [ "$NEED_SB" = 0 ] || cp /system/lib64/libsamsungSoundbooster_plus_legacy.so "$HSB_VER" "$VKO/up/"; } &&
+           chown 0:0 "$VKO/up/"*.so && chmod 644 "$VKO/up/"*.so; then
+            $BB chcon -R u:object_r:system_lib_file:s0 "$VKO/up" 2>/dev/null || true
+            if [ "$SB_HIDE_EQ" = 1 ]; then
+                $BB mknod "$VKO/up/libsoundboostereq_legacy.so" c 0 0 2>/dev/null || true
+                $BB chcon u:object_r:system_lib_file:s0 "$VKO/up/libsoundboostereq_legacy.so" 2>/dev/null || true
+            fi
+            if $BB mount -t overlay overlay -o "ro,lowerdir=$VKO/up:$ROOTFS/system/lib64" "$ROOTFS/system/lib64"; then
+                [ "$NEED_VK" = 1 ] && VK_HIDL_OV=1 &&
+                    echo "VaultKeeper: supplied One UI's HIDL libvkmanager.so + vaultkeeper@2.0.so in /system/lib64 (avoids Bluetooth AIDL deadlock)"
+                [ "$NEED_SB" = 1 ] &&
+                    echo "Audio: supplied One UI's libsamsungSoundbooster_plus_legacy.so + ${HSB_VER##*/} in /system/lib64$([ "$SB_HIDE_EQ" = 1 ] && echo ' (hid guest libsoundboostereq_legacy.so)')"
+            else
+                echo "!!! /system/lib64 overlay refused; keeping guest libraries"
+            fi
+        fi
+    fi
 fi
 # One UI's product APEXes: host apexd reports Google's Play system module as
 # /product/apex/com.google.android.gmssystem.prodvic.apex, and the guest's package
@@ -1350,41 +1542,6 @@ fi
 # Made after the whole-system overlays above (they need nothing mounted under
 # system) and before anything else is mounted under product. An image with its
 # own product/apex keeps it. ONEOS_GUEST_PRODUCT_APEX=0 leaves it out.
-# farm_dir <target> <work dir> <entry>...: <target>'s top level as a tmpfs copy
-# with the image's entries bound back and empty mount points <entry> added (a
-# name ending in / is a folder, others empty files). Echoes nothing; status 0
-# when every entry is in place, else everything it made is taken back.
-farm_dir() {
-    fd_t=$1; fd_w=$2; shift 2
-    fd_f="$fd_w/farm"; fd_o="$fd_w/orig"
-    $BB umount -l "$fd_f" 2>/dev/null; $BB umount -l "$fd_o" 2>/dev/null
-    mkdir -p "$fd_f" "$fd_o" && $BB mount -t tmpfs -o size=256k,mode=755 tmpfs "$fd_f" || return 1
-    for fd_e in "$fd_t"/* "$fd_t"/.[!.]*; do
-        [ -e "$fd_e" ] || [ -L "$fd_e" ] || continue
-        fd_n=${fd_e##*/}
-        if [ -L "$fd_e" ]; then cp -P "$fd_e" "$fd_f/$fd_n"
-        elif [ -d "$fd_e" ]; then mkdir "$fd_f/$fd_n"
-        else : > "$fd_f/$fd_n"; fi || { $BB umount -l "$fd_f"; return 1; }
-    done
-    for fd_e in "$@"; do
-        case "$fd_e" in */) mkdir -p "$fd_f/${fd_e%/}" ;; *) : > "$fd_f/$fd_e" ;; esac || { $BB umount -l "$fd_f"; return 1; }
-    done
-    chmod 755 "$fd_f"; $BB chcon -R u:object_r:system_file:s0 "$fd_f" 2>/dev/null
-    # Recursive (oneui8test9): what is already mounted inside an entry comes along with it.
-    $BB mount --rbind "$fd_t" "$fd_o" || { $BB umount -l "$fd_f"; return 1; }
-    # Private before the farm goes over the target: a shared bind would show the farm here too.
-    $BB mount --make-rprivate "$fd_o" || { $BB umount -l "$fd_o"; $BB umount -l "$fd_f"; return 1; }
-    $BB mount --bind "$fd_f" "$fd_t" || { $BB umount -l "$fd_o"; $BB umount -l "$fd_f"; return 1; }
-    for fd_e in "$fd_o"/* "$fd_o"/.[!.]*; do
-        [ -e "$fd_e" ] && [ ! -L "$fd_e" ] || continue
-        $BB mount --rbind "$fd_e" "$fd_t/${fd_e##*/}" || {
-            awk -v r="$fd_t/" 'index($2, r) == 1 {print $2}' /proc/mounts | sort -r | while read -r m; do $BB umount -l "$m"; done
-            $BB umount -l "$fd_t"; $BB umount -l "$fd_o"; $BB umount -l "$fd_f"; return 1
-        }
-    done
-    $BB mount -o remount,ro "$fd_f" 2>/dev/null
-    return 0
-}
 if [ "${ONEOS_GUEST_PRODUCT_APEX:-1}" = 1 ] && [ -d /product/apex ] && [ ! -e "$GUEST_PRODUCT/apex" ] && [ ! -L "$GUEST_PRODUCT/apex" ]; then
     if farm_dir "$GUEST_PRODUCT" "$STAGE/product_farm" apex/ && [ -d "$GUEST_PRODUCT/apex" ] &&
        $BB mount --bind /product/apex "$GUEST_PRODUCT/apex"; then
@@ -1646,6 +1803,20 @@ if { [ -d /system_ext/apex ] && [ -d "$GUEST_SYSTEM_EXT" ]; } || [ $INJ = 1 ] ||
             $BB chcon u:object_r:system_file:s0 "$OV/up/bin" 2>/dev/null || true
             $BB chcon u:object_r:hwservicemanager_exec:s0 "$OV/up/bin/hwservicemanager" 2>/dev/null || true
         fi
+        TAB_CAM_COMPAT=0
+        if [ "$ONEUI95_TAB_S9_FE" = 1 ] && [ "${ONEOS_ONEUI_HOST_CAMERA:-1}" = 1 ] &&
+           [ -f "$STAGE/OneOSTabS9FeCamCompat.jar" ] && [ ! -L "$STAGE/OneOSTabS9FeCamCompat.jar" ] &&
+           [ -f /system/priv-app/SamsungCamera/SamsungCamera.apk ] &&
+           grep -aq 'Lc5/m;' /system/priv-app/SamsungCamera/SamsungCamera.apk 2>/dev/null; then
+            if mkdir -p "$OV/up/framework" &&
+               cp "$STAGE/OneOSTabS9FeCamCompat.jar" "$OV/up/framework/OneOSTabS9FeCamCompat.jar" &&
+               chmod 755 "$OV/up" "$OV/up/framework" &&
+               chmod 644 "$OV/up/framework/OneOSTabS9FeCamCompat.jar"; then
+                $BB chcon u:object_r:system_file:s0 "$OV/up/framework" "$OV/up/framework/OneOSTabS9FeCamCompat.jar" 2>/dev/null || true
+                TAB_CAM_COMPAT=1
+                echo "Camera: staged OneOSTabS9FeCamCompat.jar in $GUEST_SYSTEM_EXT/framework (OneUiVersion 90500 shim)"
+            fi
+        fi
         if [ $INJ = 1 ]; then
             mkdir -p "$OV/up/framework" && cp "$STAGE/oneos-telephony.jar" "$OV/up/framework/" &&
                 chmod 755 "$OV/up" "$OV/up/framework" && chmod 644 "$OV/up/framework/oneos-telephony.jar"
@@ -1666,11 +1837,11 @@ if { [ -d /system_ext/apex ] && [ -d "$GUEST_SYSTEM_EXT" ]; } || [ $INJ = 1 ] ||
             else
                 # The apex mount point matters more: today's rw form then.
                 INJ=0
-                rm -rf "$OV/up/framework"
+                rm -f "$OV/up/framework/oneos-telephony.jar"
                 echo "Signal poll: off (read-only overlay on $GUEST_SYSTEM_EXT refused)"
             fi
         fi
-        if [ $INJ = 0 ] && { [ ! -d "$GUEST_SYSTEM_EXT/apex" ] || [ $HWSM = 1 ] || [ $SEC_IMS = 1 ] || [ $SAMCAM = 1 ]; }; then
+        if [ $INJ = 0 ] && { [ ! -d "$GUEST_SYSTEM_EXT/apex" ] || [ $HWSM = 1 ] || [ $SEC_IMS = 1 ] || [ $SAMCAM = 1 ] || [ $TAB_CAM_COMPAT = 1 ]; }; then
             mkdir -p "$OV/work"
             if $BB mount -t overlay overlay \
                 -o "lowerdir=$GUEST_SYSTEM_EXT,upperdir=$OV/up,workdir=$OV/work" \
@@ -1762,6 +1933,21 @@ if { [ -d /system_ext/apex ] && [ -d "$GUEST_SYSTEM_EXT" ]; } || [ $INJ = 1 ] ||
                     [ $utok = 1 ] && echo "OneOS app: user-type entry bound into system_ext/etc/sysconfig (no overlayfs)" ||
                         echo "!!! OneOS app: could not bind its user-type entry; One UI's package manager may leave it out"
                 fi
+                # 0.5.51: Samsung Camera's system_ext entries (priv-app/SamsungCamera, its jars and permission
+                # files) the same way, from a layer of their own: only the camera's mount points, nothing else of
+                # the overlay's layer, so a session without the camera stays as before.
+                if [ $SAMCAM = 1 ] && [ "${ONEOS_MERGE_UP:-0}" = 1 ]; then
+                    SEUP="$STAGE/samcam_se_up"
+                    $BB umount -l "$SEUP" 2>/dev/null; mkdir -p "$SEUP"
+                    if $BB mount -t tmpfs -o size=1m,mode=755 tmpfs "$SEUP" && $BB mount --make-private "$SEUP" &&
+                       samcam_mountpoints "$SEUP" sysext && SEM=$(merge_up "$SEUP" "$GUEST_SYSTEM_EXT" "$STAGE/samcam_se_merge") &&
+                       samcam_bind sysext "$GUEST_SYSTEM_EXT"; then
+                        SAMCAM_BOUND=1
+                        echo "Samsung Camera: system_ext without overlayfs; its mount points in bound copies of $SEM folder(s)"
+                    else
+                        SAMCAM=0; echo "Samsung Camera in the guest: off (system_ext without overlayfs: its bound copies failed)"
+                    fi
+                fi
             else
                 awk -v r="$GUEST_SYSTEM_EXT/" 'index($2, r) == 1 {print $2}' /proc/mounts | sort -r | while read -r m; do $BB umount -l "$m"; done
                 grep -q " $GUEST_SYSTEM_EXT tmpfs " /proc/mounts && $BB umount -l "$GUEST_SYSTEM_EXT"
@@ -1774,7 +1960,7 @@ if { [ -d /system_ext/apex ] && [ -d "$GUEST_SYSTEM_EXT" ]; } || [ $INJ = 1 ] ||
         [ $SEC_IMS = 1 ] && [ $SECIMS_BOUND = 0 ] && { SEC_IMS=0; rm -f "$STAGE/data/oneos_sec_ims"; echo "Samsung IMS in the guest: off (no writable overlay to bind onto)"; }
         # Samsung Camera's mount points are in the overlay's own layer, so the
         # read-only form takes it as well.
-        if [ $SAMCAM = 1 ]; then
+        if [ $SAMCAM = 1 ] && [ "${SAMCAM_BOUND:-0}" != 1 ]; then
             if mount | grep -q " $GUEST_SYSTEM_EXT type overlay" && samcam_bind sysext "$GUEST_SYSTEM_EXT"; then SAMCAM_BOUND=1; else
                 SAMCAM=0; echo "Samsung Camera in the guest: off (bind-mount onto $GUEST_SYSTEM_EXT failed)"
             fi
@@ -1868,9 +2054,10 @@ ddc_xml() {
 <displayConfiguration>
     <screenBrightnessMap>
 DDCEOF
-    awk -v wide="$1" -v m="${2:-}" 'BEGIN {
+    # Only the Tab S9 FE's LCD (brightnessMaximum 1.176) scales from 1.0; every other phone from 1.5.
+    awk -v wide="$1" -v m="${2:-}" -v lo="$([ "${TAB_S9_FE_HOST:-0}" = 1 ] && echo 1.0 || echo 1.5)" 'BEGIN {
         ref = 5.2980394; k = 1
-        if (m + 0 >= 1.5 && m + 0 <= 8) k = ref / m
+        if (m + 0 >= lo + 0 && m + 0 <= 8) k = ref / m
         n = split("0.0026:2.21 0.00333:3.0 0.005015:5.0 0.00694:7.5 0.008891:10.4 0.012079:15.0 0.015279:20.0 0.021151:30.0 0.026566:40.0 0.03701:60.0 0.045723:80.0 0.054391:100.0 0.068653:135.0 0.082069:170.0 0.093062:200.0 0.110574:250.0 0.127287:300.0 0.158918:400.0 0.188764:500.0 0.196299:520.0", pt, " ")
         if (wide == "wide") printf "        <point><value>0.0</value><nits>0.05</nits></point>\n        <point><value>0.000366255</value><nits>0.3</nits></point>\n"
         for (i = 1; i <= n; i++) {
@@ -1966,6 +2153,9 @@ else
                 "$STAGE/display_modes_host.log" 2>/dev/null | head -n 1)
             case "$*" in '2448 1848 420'|'1248 1972 420') ;; *) set -- ;; esac
             [ "$#" != 3 ] || echo "One UI 9.5: port $port stock panel $1 x $2 at $3 dpi"
+        elif [ "$ONEUI95_TAB_S9_FE" = 1 ]; then
+            set -- 1440 2304 280
+            echo "One UI 9.5: port $port Tab S9 FE stock panel $1 x $2 at $3 dpi"
         fi
         if [ $DDC_PROX = 1 ]; then ddc_xml $DDC_RANGE "$m" "$@"
         else ddc_xml $DDC_RANGE "$m" "$@" | sed '/<proxSensor>/,/<\/proxSensor>/d'
@@ -2068,6 +2258,30 @@ if [ "$ONEUI95_FOLD8" = 1 ]; then
             echo "!!! One UI 9.5: Fold8 framework RRO could not be mounted"
         fi
     fi
+fi
+# Tab S9 FE (SM-X510) One UI 9.5 LCD brightness floor: applied via an immutable product RRO
+# before zygote (matching Fold8's product/overlay pattern), overriding only the 5 scalar limits
+# (min=8 / 0.03137255, dim=8, extendedMax=300) while leaving S26 Ultra's nits/privacy arrays intact.
+if [ "$ONEUI95_TAB_S9_FE" = 1 ] && [ "${ONEOS_GUEST_TAB_S9_FE_BRIGHTNESS:-1}" = 1 ]; then
+    product_overlay="$GUEST_PRODUCT/overlay"
+    t9_rro="$STAGE/OneOSTabS9FeBrightness.apk"
+    t9_overlay="$STAGE/oneui95-tabs9fe-product-overlay"
+    if [ -s "$t9_rro" ] && [ ! -L "$t9_rro" ] && [ -d "$product_overlay" ] && [ ! -L "$product_overlay" ] &&
+       [ ! -e "$product_overlay/config/config.xml" ]; then
+        if mkdir -p "$t9_overlay" &&
+           $BB mount -t tmpfs -o size=64k,mode=755 tmpfs "$t9_overlay" &&
+           $BB mount --make-private "$t9_overlay" &&
+           cp "$t9_rro" "$t9_overlay/OneOSTabS9FeBrightness.apk" &&
+           chmod 755 "$t9_overlay" && chmod 644 "$t9_overlay/OneOSTabS9FeBrightness.apk" &&
+           $BB chcon -R u:object_r:system_file:s0 "$t9_overlay" &&
+           $BB mount -t overlay overlay -o "ro,lowerdir=$t9_overlay:$product_overlay" "$product_overlay"; then
+            echo "One UI 9.5: mounted Tab S9 FE LCD brightness RRO in product/overlay (OneOSTabS9FeBrightness.apk)"
+        else
+            echo "!!! One UI 9.5: Tab S9 FE LCD brightness RRO could not be mounted"
+        fi
+    fi
+fi
+if [ "$ONEUI95_FOLD8" = 1 ]; then
     fold8_settings="$STAGE/Fold8OneUI95Settings.apk"
     donor_settings="$ROOTFS/system/priv-app/SecSettings/SecSettings.apk"
     if [ -s "$fold8_settings" ] && [ -f "$donor_settings" ] && [ ! -L "$donor_settings" ] &&
@@ -2193,10 +2407,16 @@ elif $BB mount --rbind /mnt "$ROOTFS/mnt"; then
 fi
 guarded_services="$STAGE/services_patched.jar"
 fold8_services="$STAGE/Fold8OneUI95Services.jar"
-if [ "$ONEUI95_FOLD8" = 1 ] && [ -s "$fold8_services" ] &&
-   [ "$($BB sha256sum "$guarded_services" | cut -d' ' -f1)" = "ce59d491204e82af0e8d40fc1da07867ace9fbe116ecef2b296c261983eb80f2" ]; then
-    guarded_services="$fold8_services"
-fi
+# Josh's Fold8 jar is the set's services_patched.jar plus the Fold8 paths (the
+# S26 Ultra build's fold wallpaper routing is R8-stripped to `throw null`).
+# 0.5.42-0.5.44 checked only r1's hash: set r2 changed services_patched.jar (screen
+# lock) and the Fold8 got the plain jar, system_server NPE in
+# setWallpaperPhysicalDisplayId at the first wallpaper (F971U 486f3ee7).
+case "$($BB sha256sum "$guarded_services" 2>/dev/null | cut -d' ' -f1)" in
+    ce59d491204e82af0e8d40fc1da07867ace9fbe116ecef2b296c261983eb80f2|90ab78f0a3fbb175c4607883f7359ed7ab305257e816ae27dabf3af527a88d6a)
+        [ "$ONEUI95_FOLD8" = 1 ] && [ -s "$fold8_services" ] && guarded_services="$fold8_services" ;;
+    *) [ "$ONEUI95_FOLD8" = 1 ] && echo "!!! Fold8 services.jar: services_patched.jar is not one the Fold8 jar was built on; the plain one" ;;
+esac
 if [ -f "$guarded_services" ]; then
     $BB umount -l "$ROOTFS/system/framework/services.jar" 2>/dev/null || true
     $BB mount --bind "$guarded_services" "$ROOTFS/system/framework/services.jar"
@@ -3265,6 +3485,31 @@ if [ -f "$STAGE/SystemUI_patched.apk" ] && [ -f "$QS_APK" ]; then
         echo "Quick settings density patch left out (ONEOS_GUEST_QS_DENSITY=0)"
     fi
 fi
+# Infinity-X's lock screen draws nothing over the in-display sensor: its SystemUI builds the UDFPS overlay with a
+# null animation controller, so the sensor unlocks with no ring to press (vdcoolok's pull request #152, owner
+# 11-28: his fix for Infinity-X). SystemUI_glyph.apk is the image's SystemUI (sha256 6a99684e...) with classes2.dex
+# replaced (switcher/patches/systemui-guest-glyph): NotificationShadeWindowView adds OneOSGlyphView, a ring placed
+# from ro.oneos.fp_glyph (guest_props.sh, this phone's sensor) and shown while the keyguard is locked. Only for an
+# Infinity-X image whose SystemUI is that build; ONEOS_GUEST_GLYPH=0 leaves the image's own.
+if grep -q '^ro\.infinity\.' "$ROOTFS/system/build.prop" 2>/dev/null && [ -f "$STAGE/SystemUI_glyph.apk" ] && [ -f "$QS_APK" ] &&
+   [ ! -f "$STAGE/SystemUI_patched.apk" ]; then
+    if [ "${ONEOS_GUEST_GLYPH:-1}" != 1 ]; then
+        echo "Infinity-X fingerprint ring left out (ONEOS_GUEST_GLYPH=0)"
+    elif [ "$(sha256sum "$QS_APK" 2>/dev/null | cut -c1-64)" != 6a99684e831f9635738189d39667debe0f8b798012fa4eb622a7cb87ad9b1ddf ]; then
+        echo "Infinity-X fingerprint ring left out (this image's SystemUI is not the build SystemUI_glyph.apk was made from)"
+    else
+        chmod 644 "$STAGE/SystemUI_glyph.apk"
+        $BB chcon u:object_r:system_file:s0 "$STAGE/SystemUI_glyph.apk" 2>/dev/null || true
+        $BB umount -l "$QS_APK" 2>/dev/null || true
+        $BB mount --bind "$STAGE/SystemUI_glyph.apk" "$QS_APK" &&
+            $BB mount -o remount,bind,ro "$STAGE/SystemUI_glyph.apk" "$QS_APK" 2>/dev/null
+        if [ "$(stat -c %d:%i "$QS_APK" 2>/dev/null)" = "$(stat -c %d:%i "$STAGE/SystemUI_glyph.apk")" ]; then
+            echo "Bound SystemUI_glyph.apk -> $QS_APK (Infinity-X lock screen fingerprint ring)"
+        else
+            echo "!!! WARNING: SystemUI_glyph.apk is not in place; the Infinity-X lock screen shows no fingerprint ring"
+        fi
+    fi
+fi
 
 # Nothing OS's launcher with more category boxes per row in the app drawer on
 # a wide panel (scripts/make-overlays.sh, patches/nothing_launcher_drawer.py):
@@ -3509,7 +3754,7 @@ if [ -f "$FEAT" ]; then
             HAOD=""
             if grep -q '<SEC_FLOATING_FEATURE_FRAMEWORK_CONFIG_AOD_ITEM>[^<]' /system/etc/floating_feature.xml 2>/dev/null; then
                 HAOD="One UI has AOD here"
-            elif [ -e /sys/class/lcd/panel/alpm ]; then
+            elif { [ "$TAB_S9_FE_HOST" != 1 ] || [ ! -f /system/etc/floating_feature.xml ]; } && [ -e /sys/class/lcd/panel/alpm ]; then
                 HAOD="the panel has a low-power mode"
             fi
             AODAPP=""
@@ -3817,7 +4062,7 @@ fi
 # Infinity-X's AOSP SystemUI takes it too (0.4.33); never ColorOS's (it has
 # oplus-telephony-common.jar, and make-overlays.sh builds the RRO for its sets
 # only from SystemUIGoogle or an AOSP SystemUI).
-if [ "$ONEUI95_FOLD8" != 1 ] && [ -f "$STAGE/OneOSPixelStatusBar.apk" ] && { [ -f "$GUEST_SYSTEM_EXT/priv-app/SystemUIGoogle/SystemUIGoogle.apk" ] ||
+if [ "$ONEUI95_FOLD8" != 1 ] && [ "$ONEUI95_TAB_S9_FE" != 1 ] && [ -f "$STAGE/OneOSPixelStatusBar.apk" ] && { [ -f "$GUEST_SYSTEM_EXT/priv-app/SystemUIGoogle/SystemUIGoogle.apk" ] ||
      { [ -f "$GUEST_SYSTEM_EXT/priv-app/SystemUI/SystemUI.apk" ] && [ ! -f "$GUEST_SYSTEM_EXT/framework/oplus-telephony-common.jar" ]; }; }; then
     if [ "${ONEOS_GUEST_STATUSBAR_PADDING:-1}" = 1 ]; then
         mkdir -p "$STAGE/oem/overlay" &&
@@ -3911,14 +4156,18 @@ fi
 # the same points scaled to its panel (the Fold's put the slider's top at two thirds of its normal maximum).
 BR_APK=OneOSBrightnessRange.apk
 BR_BM=$(grep 'DisplayDeviceInfo{' "$STAGE/display_modes_host.log" 2>/dev/null | sed -n 's/.*brightnessMaximum \([0-9.]*\).*/\1/p' | head -n 1)
-if [ -f "$STAGE/OneOSBrightnessRange34.apk" ] && awk -v m="$BR_BM" 'BEGIN { exit !(m + 0 >= 1.5 && m + 0 < 4.2) }'; then
+if [ "$TAB_S9_FE_HOST" = 1 ] && awk -v m="$BR_BM" 'BEGIN { exit !(m + 0 > 0 && m + 0 < 1.5) }'; then
+    # LCD panels (e.g. Galaxy Tab S9 FE: brightnessMaximum 1.176, max 300) map 0..1 across
+    # their full range already; the OLED range overlays would cap them to 19-30% brightness.
+    BR_APK=""
+elif [ -f "$STAGE/OneOSBrightnessRange34.apk" ] && awk -v m="$BR_BM" 'BEGIN { exit !(m + 0 >= 1.5 && m + 0 < 4.2) }'; then
     BR_APK=OneOSBrightnessRange34.apk
 fi
 # 0.5.35, PixelOS too (owner, A36, 11-21: "Lowest brightness is still not very low"): it sets no float range, so the
 # framework took the old integer minimum 10/255 = 0.0354, about 33 nits on the A36 where One UI goes to 2.
 BR_PIXELOS=0
 grep -q '^ro.custom.version=PixelOS_' "$GUEST_PRODUCT/etc/build.prop" 2>/dev/null && BR_PIXELOS=1
-if [ -f "$STAGE/$BR_APK" ] && { [ -f "$GUEST_SYSTEM_EXT/framework/nt-telephony-common.jar" ] || [ $BR_PIXELOS = 1 ]; } &&
+if [ -n "$BR_APK" ] && [ -f "$STAGE/$BR_APK" ] && { [ -f "$GUEST_SYSTEM_EXT/framework/nt-telephony-common.jar" ] || [ $BR_PIXELOS = 1 ]; } &&
    [ "${ONEOS_GUEST_BRIGHTNESS_RANGE:-1}" = 1 ]; then
     rm -f "$STAGE/oem/overlay/OneOSBrightnessRange.apk" "$STAGE/oem/overlay/OneOSBrightnessRange34.apk"
     mkdir -p "$STAGE/oem/overlay" &&
@@ -4180,6 +4429,20 @@ for pair in $CAM_CL:libcamera_client.so ${CAM_CI:+$CAM_CI:libcameracompatbilityi
         echo "Bound ${pair%%:*} -> $ROOTFS/system/lib64/${pair#*:}"
     fi
 done
+# 0.5.45 (Tab S9 FE+ 0dbe56e0, ColorOS 17): the S Pen was a mouse pointer. Samsung's digitizer (sec_e-pen)
+# has no INPUT_PROP_DIRECT and One UI ships no .idc for it (One UI's own InputReader knows it); AOSP's
+# InputReader then makes it an indirect pointer (Touch Input Mapper mode POINTER, sources MOUSE | STYLUS).
+# An input device configuration in the guest's /data/system/devices/idc (searched after /system, /odm and
+# /vendor) makes it a direct pen on the built-in panel. One UI images keep Samsung's handling.
+PIDC=$STAGE/data/system/devices/idc/sec_e-pen.idc
+rm -f "$PIDC"
+if [ "$ONEUI95_IMAGE" != 1 ] && grep -q '^N: Name="sec_e-pen"$' /proc/bus/input/devices 2>/dev/null; then
+    mkdir -p "${PIDC%/*}" && chown 1000:1000 "$STAGE/data/system/devices" "${PIDC%/*}" &&
+        printf '# OneOS: the S Pen as a direct stylus on the built-in panel\ndevice.internal = 1\ntouch.deviceType = touchScreen\ntouch.orientationAware = 1\n' > "$PIDC" &&
+        chown 1000:1000 "$PIDC" && chmod 644 "$PIDC" &&
+        $BB chcon -R u:object_r:system_data_file:s0 "$STAGE/data/system/devices" 2>/dev/null
+    [ -f "$PIDC" ] && echo "S Pen: sec_e-pen.idc in the guest's /data/system/devices/idc (a direct pen, not a mouse pointer)"
+fi
 # Fingerprint and face unlock from One UI's own enrolments (0.5.18, owner: "if we cant give alternate fix for
 # fp/face we have to take from OneUI"; from vdcoolok's pull request #152 branch). Only the lists (names and ids)
 # are copied; the templates stay in the phone's secure hardware. The guest's services.jar never removes a
@@ -5310,6 +5573,30 @@ else
     echo "WARNING: could not copy $BB into the guest /data; guest_start.sh keeps the host's path"
 fi
 mkdir -p "$STAGE/data/user/0" "$STAGE/data/user_de/0"
+# App folders whose security label is another app id's (0.5.51, owner, A36 Nothing OS: Xgram brought over by Bring
+# apps, then removed with its data kept and installed again under a new uid; installd found the old owner and left
+# the folder as it was, it ended up owned by the new uid with the old uid's categories, and the app could not open
+# its own files: "Unable to create working directory", EACCES). A folder labelled s0:cA,cB,c512,c768 (an app's own
+# categories) with an owner whose categories are other ones gets its owner's, with all it holds. System apps
+# (s0:c512,c768) are left alone. ONEOS_GUEST_APPDATA_RELABEL=0: off.
+if [ "${ONEOS_GUEST_APPDATA_RELABEL:-1}" = 1 ]; then
+    relab=0
+    for d in "$STAGE"/data/user/0/* "$STAGE"/data/user_de/0/*; do
+        [ -d "$d" ] && [ ! -L "$d" ] || continue
+        set -- $($BB ls -ldnZ "$d" 2>/dev/null)
+        u=$3; l=$5
+        case "$u" in ''|*[!0-9]*) continue ;; esac
+        [ "$u" -ge 10000 ] && [ "$u" -lt 20000 ] || continue
+        case "$l" in u:object_r:*:s0:c[0-9]*,c[0-9]*,c512,c768) ;; *) continue ;; esac
+        a=$((u - 10000)); want="c$((a & 255)),c$((256 + (a >> 8 & 255))),c512,c768"
+        [ "${l##*:s0:}" = "$want" ] && continue
+        new="${l%:s0:*}:s0:$want"
+        if $BB chcon -R -h "$new" "$d" 2>/dev/null || chcon -R "$new" "$d" 2>/dev/null; then
+            relab=$((relab + 1)); echo "App data relabelled: ${d#$STAGE/data/} (owner $u: ${l##*:s0:} -> $want)"
+        fi
+    done
+    [ $relab = 0 ] || echo "App data: $relab folder(s) given their owner's security categories"
+fi
 mkdir -p "$STAGE/data/system/users/0" "$STAGE/data/system_de/0/spblob" "$STAGE/data/system_ce/0"
 # The fingerprint framework sets its active user before vendor code can create
 # this directory. Without it the sensor is registered but never opened.
@@ -7522,35 +7809,48 @@ fi
 # and the guest's system_server aborted in LoopbackEventHandler::Start ("BpfRingbuf init failed ...
 # map_netd_loopback_access_ringbuf: No such file or directory"). An empty ring buffer for the session
 # (switcher/native/oneos_bpf_ringbuf.c); return_to_oneui.sh removes the one made here.
+# 0.5.45 (S22 EU 208f35b9 on 0.5.44): the same for TcpMetricsLogger's ring buffer: One UI 8's module under
+# Android 17 opens map_netd_tcp_metrics_ringbuf in ConnectivityService's constructor ("Failed to create
+# BpfRingbuf ... ENOENT", system_server died 50 s in). Each ring buffer the module names (its .so or its
+# service-connectivity.jar) and One UI did not pin gets an empty one; every path made is listed in
+# bpf_ringbuf.created, one per line. Where no new map is allowed, a One UI ring buffer that nothing writes
+# during the session is preferred as the alias (packet trace, test) before the others.
 rm -f "$STAGE/bpf_ringbuf.created"
 if [ "$A17_ON_A16" = 1 ]; then
-    RB=/sys/fs/bpf/netd_shared/map_netd_loopback_access_ringbuf
     LSC="$ROOTFS/apex/com.android.tethering/lib64/libservice-connectivity.so"
-    if [ -e "$RB" ]; then
-        echo "Loopback ring buffer: One UI pinned its own; left alone"
-    elif ! $BB grep -q map_netd_loopback_access_ringbuf "$LSC" 2>/dev/null; then
-        echo "Loopback ring buffer: One UI's tethering module has no loopback poller; none needed"
-    elif [ ! -d /sys/fs/bpf/netd_shared ] || [ ! -x "$STAGE/oneos_bpf_ringbuf" ]; then
-        echo "!!! Loopback ring buffer: no /sys/fs/bpf/netd_shared or no oneos_bpf_ringbuf; the guest's system_server will abort in LoopbackEventHandler"
-    elif "$STAGE/oneos_bpf_ringbuf" create "$RB" && [ -e "$RB" ]; then
-        echo "$RB" > "$STAGE/bpf_ringbuf.created"
-        echo "Loopback ring buffer: an empty one pinned at $RB for the session (One UI's module starts its poller on Android 17)"
-    else
-        # 0.5.38: the S22 Ultra (Exynos) 91c4fef5 refused to make one ("BPF_MAP_CREATE: Operation not
-        # permitted") and system_server aborted 50 s in. A ring buffer One UI's own loader pinned (no program
-        # of the guest's writes the loopback events into it) pinned at the path instead: no map is created.
-        RBA=""
-        for x in /sys/fs/bpf/netd_shared/map_netd_local_net_note_op_ringbuf /sys/fs/bpf/netd_shared/map_*ringbuf /sys/fs/bpf/net_shared/map_*ringbuf /sys/fs/bpf/map_*ringbuf; do
-            [ -e "$x" ] && [ "$x" != "$RB" ] || continue
-            if "$STAGE/oneos_bpf_ringbuf" alias "$x" "$RB" && [ -e "$RB" ]; then RBA=$x; break; fi
-        done
-        if [ -n "$RBA" ]; then
-            echo "$RB" > "$STAGE/bpf_ringbuf.created"
-            echo "Loopback ring buffer: no new map allowed on this phone; One UI's $RBA pinned at $RB for the session"
+    LSJ="$ROOTFS/apex/com.android.tethering/javalib/service-connectivity.jar"
+    for RBN in loopback_access tcp_metrics; do
+        RB=/sys/fs/bpf/netd_shared/map_netd_${RBN}_ringbuf
+        if [ -e "$RB" ]; then
+            echo "Ring buffer $RBN: One UI pinned its own; left alone"
+        elif ! $BB grep -q "map_netd_${RBN}_ringbuf" "$LSC" 2>/dev/null &&
+             ! { $BB unzip -p "$LSJ" 2>/dev/null | $BB grep -q "map_netd_${RBN}_ringbuf"; }; then
+            echo "Ring buffer $RBN: One UI's tethering module does not use it; none needed"
+        elif [ ! -d /sys/fs/bpf/netd_shared ] || [ ! -x "$STAGE/oneos_bpf_ringbuf" ]; then
+            echo "!!! Ring buffer $RBN: no /sys/fs/bpf/netd_shared or no oneos_bpf_ringbuf; the guest's system_server will abort"
+        elif "$STAGE/oneos_bpf_ringbuf" create "$RB" && [ -e "$RB" ]; then
+            echo "$RB" >> "$STAGE/bpf_ringbuf.created"
+            echo "Ring buffer $RBN: an empty one pinned at $RB for the session (One UI's module uses it on Android 17)"
         else
-            echo "!!! Loopback ring buffer: could not pin $RB; the guest's system_server will abort in LoopbackEventHandler"
+            # 0.5.38: the S22 Ultra (Exynos) 91c4fef5 refused to make one ("BPF_MAP_CREATE: Operation not
+            # permitted") and system_server aborted 50 s in. A ring buffer One UI's own loader pinned (no program
+            # of the guest's writes these events into it) pinned at the path instead: no map is created.
+            RBA=""
+            for x in /sys/fs/bpf/netd_shared/map_netd_packet_trace_ringbuf /sys/fs/bpf/net_shared/map_netd_test_ringbuf \
+                     /sys/fs/bpf/netd_shared/map_netd_test_ringbuf /sys/fs/bpf/netd_shared/map_netd_local_net_note_op_ringbuf \
+                     /sys/fs/bpf/netd_shared/map_*ringbuf /sys/fs/bpf/net_shared/map_*ringbuf /sys/fs/bpf/map_*ringbuf; do
+                [ -e "$x" ] && [ "$x" != "$RB" ] || continue
+                $BB grep -qxF "$x" "$STAGE/bpf_ringbuf.created" 2>/dev/null && continue
+                if "$STAGE/oneos_bpf_ringbuf" alias "$x" "$RB" && [ -e "$RB" ]; then RBA=$x; break; fi
+            done
+            if [ -n "$RBA" ]; then
+                echo "$RB" >> "$STAGE/bpf_ringbuf.created"
+                echo "Ring buffer $RBN: no new map allowed on this phone; One UI's $RBA pinned at $RB for the session"
+            else
+                echo "!!! Ring buffer $RBN: could not pin $RB; the guest's system_server will abort"
+            fi
         fi
-    fi
+    done
 fi
 # oneui8test13: the guest's netd (Android 17) asks One UI 8's tethering module (train 374205010 on the S22)
 # for the socket-ops program prog_netd_sockops_prog. Some boots of that phone had no such pin (test11
@@ -7573,8 +7873,37 @@ if [ "$A17_ON_A16" = 1 ]; then
     elif "$STAGE/oneos_bpf_ringbuf" sockops-create "$SOP" && [ -e "$SOP" ]; then
         echo "$SOP" > "$STAGE/bpf_sockops.created"
         echo "netd socket-ops program: none pinned on this boot; one that does nothing pinned at $SOP for the session"
+    elif [ -x /system/bin/runcon ] && /system/bin/runcon u:r:bpfloader:s0 "$STAGE/oneos_bpf_ringbuf" sockops-create "$SOP" && [ -e "$SOP" ]; then
+        # 0.5.47 (testing): the S22 Ultra Exynos 6daa8c2c refused BPF_PROG_LOAD to root (EPERM); tried again
+        # as One UI's BPF loader (its SELinux domain) when root may switch to it.
+        echo "$SOP" > "$STAGE/bpf_sockops.created"
+        echo "netd socket-ops program: pinned at $SOP as One UI's BPF loader (root alone was refused)"
     else
-        echo "!!! netd socket-ops program: could not pin $SOP; the guest's netd will abort and system_server wait for it"
+        # 0.5.47: without it the guest's netd aborts every 5 s, the guest never finishes booting and Samsung's
+        # bootchecker restarts the phone again and again (S22 Ultra Exynos 6daa8c2c: 'Infinite reset',
+        # rescue level 4), which can end in One UI's recovery screen. Stopping here returns to One UI once.
+        echo "ERROR: this phone's kernel does not let OneOS make the network program One UI 9.5's netd needs ($SOP: BPF_PROG_LOAD not permitted); not starting the guest (it would restart the phone in a loop)"
+        exit 3
+    fi
+fi
+# 0.5.44 (S22 on One UI 8, 0.5.43 494048ab): One UI 8's tethering module under Android 17 opens the L4S
+# switch map in BpfNetMaps.initBpfMaps; One UI 8's loader never pinned it, and NetworkStatsService died on
+# "Cannot open l4s_accecn_ map" (nativeBpfFdGet ENOENT) 10 s into the guest's boot. An empty one (an array,
+# 4-byte key, 1-byte value, 1 entry, as One UI 9 pins it; zero = L4S off) for the session;
+# return_to_oneui.sh removes the one made here. Pinned whether or not this module asks for it: an unused map
+# does nothing.
+rm -f "$STAGE/bpf_l4s.created"
+if [ "$A17_ON_A16" = 1 ]; then
+    L4S=/sys/fs/bpf/netd_shared/map_netd_l4s_accecn_enabled_map
+    if [ -e "$L4S" ]; then
+        echo "L4S map: One UI pinned its own; left alone"
+    elif [ ! -d /sys/fs/bpf/netd_shared ] || [ ! -x "$STAGE/oneos_bpf_ringbuf" ]; then
+        echo "!!! L4S map: no /sys/fs/bpf/netd_shared or no oneos_bpf_ringbuf; the guest's NetworkStatsService may die on 'Cannot open l4s_accecn_ map'"
+    elif "$STAGE/oneos_bpf_ringbuf" array-create "$L4S" 4 1 1 && [ -e "$L4S" ]; then
+        echo "$L4S" > "$STAGE/bpf_l4s.created"
+        echo "L4S map: an empty one (L4S off) pinned at $L4S for the session"
+    else
+        echo "!!! L4S map: could not pin $L4S; the guest's NetworkStatsService may die on 'Cannot open l4s_accecn_ map'"
     fi
 fi
 # oneui8test13: Bluetooth stuck turning on (S22 Ultra test11 8ba80911: State BLE_TURNING_ON all session,
@@ -7765,6 +8094,26 @@ pass == 2 {
         echo "!!! WARNING: guest linker config not made ($(head -c 300 "$STAGE/ld.config.guest.log" 2>/dev/null)); One UI's stays"
     fi
 fi
+# When HIDL VaultKeeper (libvkmanager.so + vendor.samsung.hardware.security.vaultkeeper@2.0.so)
+# was supplied in /system/lib64, allow com_android_bt (isolated APEX linker namespace for
+# com.android.bluetooth) to resolve vaultkeeper@2.0.so and its HIDL deps from the default namespace.
+if [ "$VK_HIDL_OV" = 1 ] && [ -f "$GLD" ]; then
+    VK_BT_LIBS="vendor.samsung.hardware.security.vaultkeeper@2.0.so:libhidlbase.so:libutils.so:libcutils.so:libc++.so"
+    if [ ! -f "$STAGE/ld.config.guest.txt" ]; then
+        cp "$GLD" "$STAGE/ld.config.guest.txt"
+    fi
+    if ! grep -q 'vendor\.samsung\.hardware\.security\.vaultkeeper@2\.0\.so' "$STAGE/ld.config.guest.txt" 2>/dev/null; then
+        $BB umount -l "$GLD" 2>/dev/null || true
+        $BB sed -i "/^namespace\.com_android_bt\.link\.default\.shared_libs *=/ s/\$/:$VK_BT_LIBS/" "$STAGE/ld.config.guest.txt" &&
+        chmod 644 "$STAGE/ld.config.guest.txt" &&
+        $BB chcon "$(ls -Z "$GLD" | $BB awk '{print $1}')" "$STAGE/ld.config.guest.txt" 2>/dev/null || true
+        if $BB mount --bind "$STAGE/ld.config.guest.txt" "$GLD"; then
+            echo "Guest linker config: added HIDL VaultKeeper libs to com_android_bt namespace"
+        else
+            echo "!!! WARNING: could not bind VaultKeeper-patched ld.config.guest.txt onto $GLD"
+        fi
+    fi
+fi
 
 # Wi-Fi (run 41): Pixel's wifi module uses the mainline supplicant when its RRO
 # sets config_wifiMainlineSupplicantEnabled, the SDK is 37+ and
@@ -7808,12 +8157,12 @@ done
 # google_apps/active): hide One UI's own GmsCore in the gmssystem APEX bind, so
 # the guest's package manager finds Play services once, where the image's
 # privapp-permissions-google-product.xml grants it. Private first, as above.
-if [ -f "$STAGE/google_apps/active" ]; then
+if [ -f "$STAGE/google_apps/active" ] || { [ "$TAB_S9_FE_HOST" = 1 ] && [ "$GMS_WANT" != 1 ] && [ -f "$GUEST_PRODUCT/priv-app/GmsCore/GmsCore.apk" ]; }; then
     for d in "$ROOTFS/apex/com.google.android.gmssystem" "$ROOTFS/apex/com.google.android.gmssystem"@*; do
         [ -d "$d/priv-app" ] || continue
         $BB mount --make-private "$d" 2>/dev/null || { echo "!!! could not make $d private, leaving it alone"; continue; }
         $BB mount -t tmpfs -o ro,size=4k,mode=755 tmpfs "$d/priv-app" &&
-            echo "Hid host com.google.android.gmssystem/priv-app in $(basename "$d") (Play services from One UI's copy in my_product)"
+            echo "Hid host com.google.android.gmssystem/priv-app in $(basename "$d") (Play services from product/my_product)"
     done
 fi
 
@@ -7996,7 +8345,169 @@ fi
 # read-only over the image's; its data cleared once when the camera changes, as below.
 # ONEOS_ONEUI_HOST_CAMERA=0 keeps the A36's on these phones too.
 HCAM_DIR=/system/priv-app/SamsungCamera
-if [ "$A17_ON_A16" != 1 ] && grep -q '^ro.build.version.oneui=' "$ROOTFS/system/build.prop" 2>/dev/null && [ "${ONEOS_ONEUI_A_CAMERA:-1}" = 1 ] &&
+if [ "$A17_ON_A16" != 1 ] && [ "$ONEUI95_TAB_S9_FE" = 1 ] && [ "${TAB_CAM_COMPAT:-0}" = 1 ] && [ "${ONEOS_ONEUI_HOST_CAMERA:-1}" = 1 ] &&
+   [ -d "$OAC_DST" ] && [ ! -L "$OAC_DST" ] && [ -f "$HCAM_DIR/SamsungCamera.apk" ] && [ ! -L "$HCAM_DIR/SamsungCamera.apk" ] &&
+   [ -f "$GUEST_SYSTEM_EXT/framework/OneOSTabS9FeCamCompat.jar" ] &&
+   [ -f "$ROOTFS/system/etc/permissions/worker_wrapper_compat.xml" ] && [ ! -L "$ROOTFS/system/etc/permissions/worker_wrapper_compat.xml" ]; then
+    TFC_DIR="$STAGE/tab_s9_fe_cam/SamsungCamera"
+    # Keep the APK and its native dependency set in sync. The camera's isolated
+    # classloader checks this package's lib/arm64 directory before the guest's
+    # /system/lib64, including for the Samsung public libraries in uses-native-library.
+    # Stage the host's Samsung camera stacks even when the donor has a same-named
+    # library: several donor One UI 9.5 builds contain Armv8.4+ code that SIGILLs on
+    # this Armv8.2 tablet. Do not put these replacements in the system lib64 overlay.
+    TFC_LIBS_ST="$(for hlib in /system/lib64/*vexfwk*.so /system/lib64/*arcsoft*.so \
+        /system/lib64/*camera*.so /system/lib64/*polarr*.so /system/lib64/*quram*.so \
+        /system/lib64/*spenocr*.so /system/lib64/*media.samsung.so /system/lib64/*snap.samsung.so \
+        /system/lib64/libheifcapture.so /system/lib64/libimage_io.so /system/lib64/libmpbase.so \
+        /system/lib64/libpadm.so /system/lib64/libppvdis_wrapper.so /system/lib64/libsccore.so \
+        /system/lib64/libsembitmapcolorspace.so /system/lib64/libsemimagecrop.so \
+        /system/lib64/libsecultrahdr.so /system/lib64/libsheif.so /system/lib64/libfloatingfeature.so \
+        /system/lib64/libexif.so /system/lib64/libmotionphoto_utils.so /system/lib64/libnativecfms.so \
+        /system/lib64/libsavsvc.so \
+        /system/lib64/libsum*.so /system/lib64/libsume*.so /system/lib64/xmp_toolkit_sdk.so \
+        /system/lib64/vexfwk_service_aidl-ndk.so \
+        /system/lib64/vendor.samsung.hardware.snap-V3-ndk.so \
+        /apex/com.samsung.android.media.imagecodec.system/lib64/libimagecodec.media.quram.so \
+        /apex/com.samsung.android.media.imagecodec.system/lib64/libsavscmn.so; do
+        [ -f "$hlib" ] || continue
+        stat -c '%n:%s:%Y' "$hlib" 2>/dev/null
+    done | sort -u | sha256sum | cut -c1-16)"
+    TFC_ST="$(stat -c %s:%Y "$HCAM_DIR/SamsungCamera.apk" 2>/dev/null):$TFC_LIBS_ST:host-camera-libs-v3"
+    tab_cam_stage_host_libs() {
+        for hlib in /system/lib64/*.camera.samsung.so /system/lib64/*.arcsoft.so \
+            /system/lib64/*.vexfwk.samsung.so /system/lib64/*.polarr.so /system/lib64/*.quram.so \
+            /system/lib64/*.spenocr.samsung.so /system/lib64/*.media.samsung.so \
+            /system/lib64/*.snap.samsung.so /system/lib64/libheifcapture.so \
+            /system/lib64/libimage_io.so /system/lib64/libmpbase.so /system/lib64/libpadm.so \
+            /system/lib64/libppvdis_wrapper.so /system/lib64/libsccore.so \
+            /system/lib64/libsembitmapcolorspace.so /system/lib64/libsemimagecrop.so \
+            /system/lib64/libsecultrahdr.so /system/lib64/libsheif.so /system/lib64/libfloatingfeature.so \
+            /system/lib64/libexif.so /system/lib64/libmotionphoto_utils.so /system/lib64/libnativecfms.so \
+            /system/lib64/libsavsvc.so \
+            /system/lib64/libsum*.so /system/lib64/libsume*.so /system/lib64/xmp_toolkit_sdk.so \
+            /system/lib64/vexfwk_service_aidl-ndk.so \
+            /system/lib64/vendor.samsung.hardware.snap-V3-ndk.so \
+            /apex/com.samsung.android.media.imagecodec.system/lib64/libimagecodec.media.quram.so \
+            /apex/com.samsung.android.media.imagecodec.system/lib64/libsavscmn.so; do
+            [ -f "$hlib" ] || continue
+            b="${hlib##*/}"
+            [ -e "$TFC_DIR/lib/arm64/$b" ] && continue
+            cp "$hlib" "$TFC_DIR/lib/arm64/$b" 2>/dev/null || return 1
+        done
+        # Preserve the previous missing-only fallback for unsuffixed camera helpers
+        # such as libtensorflowLite2_11_0_dynamic_camera.so. This deliberately
+        # leaves guest core libraries (libcamera_client, graphics, OpenCL, etc.) alone.
+        for hlib in /system/lib64/*vexfwk*.so /system/lib64/*arcsoft*.so \
+            /system/lib64/*camera*.so /system/lib64/*polarr*.so; do
+            [ -f "$hlib" ] || continue
+            b="${hlib##*/}"
+            [ -e "$TFC_DIR/lib/arm64/$b" ] && continue
+            [ -e "$ROOTFS/system/lib64/$b" ] && continue
+            cp "$hlib" "$TFC_DIR/lib/arm64/$b" 2>/dev/null || return 1
+        done
+        # Never override guest /system/lib64 libraries that link Android/One UI
+        # platform C++ ABIs: host One UI 9.0 builds reference removed/changed
+        # One UI 9.5 symbols (e.g. android::Rect::EMPTY_RECT in
+        # libcore2nativeutil.camera.samsung.so -> black preview). Verified clean
+        # of Armv8.4+ instructions in guest One UI 9.5 builds.
+        # Exception: keep host libsnap_aidl.snap.samsung.so (uses only NDK
+        # libbinder_ndk + vendor.samsung.hardware.snap-V3-ndk, no C++ libbinder
+        # imports); donor S26U's 9.5 libsnap_aidl redirects Portrait /LFS_11_3
+        # to nonexistent /system/lib64/libenn_wrapper_system.so -> SIGSEGV.
+        if command -v readelf >/dev/null 2>&1; then
+            for b in $(readelf -d "$TFC_DIR/lib/arm64"/*.so 2>/dev/null | $BB awk '
+                /^File: / { cur = $2; sub(".*/", "", cur); next }
+                cur == "libsnap_aidl.snap.samsung.so" { next }
+                /\(NEEDED\)/ && /\[(libgui|libui|libhwui|libstagefright|libstagefright_foundation|libmedia|libmedia_omx|libandroid_runtime|libbinder)\.so\]/ {
+                    if (!seen[cur]++) print cur
+                }
+            '); do
+                [ -e "$ROOTFS/system/lib64/$b" ] && rm -f "$TFC_DIR/lib/arm64/$b"
+            done
+        else
+            for p in \
+                "$TFC_DIR/lib/arm64/libcore2nativeutil.camera.samsung.so" \
+                "$TFC_DIR/lib/arm64/libsurfaceutil.camera.samsung.so" \
+                "$TFC_DIR/lib/arm64/libsecimaging.camera.samsung.so" \
+                "$TFC_DIR/lib/arm64/libsecimaging_pdk.camera.samsung.so" \
+                "$TFC_DIR/lib/arm64/libsecjpeginterface.camera.samsung.so" \
+                "$TFC_DIR/lib/arm64/libmotionphoto_jni.media.samsung.so" \
+                "$TFC_DIR/lib/arm64/libmotionphoto_utils.so" \
+                "$TFC_DIR/lib/arm64/libmotionphoto_utils_jni.media.samsung.so" \
+                "$TFC_DIR/lib/arm64/libapex_motionphoto_utils_jni.media.samsung.so" \
+                "$TFC_DIR/lib/arm64/libheifcapture.so" \
+                "$TFC_DIR/lib/arm64/libheifcapture_jni.media.samsung.so" \
+                "$TFC_DIR/lib/arm64/libsemimagecrop.so" \
+                "$TFC_DIR/lib/arm64/libsemimagecrop_jni.media.samsung.so" \
+                "$TFC_DIR/lib/arm64/libsimba.media.samsung.so" \
+                "$TFC_DIR/lib/arm64/libsimba.decoder.media.samsung.so" \
+                "$TFC_DIR/lib/arm64/libnativecfms.so" \
+                "$TFC_DIR/lib/arm64"/libsum*.so \
+                "$TFC_DIR/lib/arm64"/libsume*.so; do
+                [ -e "$p" ] || continue
+                b="${p##*/}"
+                [ -e "$ROOTFS/system/lib64/$b" ] && rm -f "$p"
+            done
+        fi
+        return 0
+    }
+    if [ "$(cat "$STAGE/tab_s9_fe_cam/.from_host" 2>/dev/null)" != "$TFC_ST" ] || [ ! -f "$TFC_DIR/SamsungCamera.apk" ]; then
+        rm -rf "$STAGE/tab_s9_fe_cam" && mkdir -p "$TFC_DIR/lib/arm64" &&
+            cp "$HCAM_DIR/SamsungCamera.apk" "$TFC_DIR/SamsungCamera.apk" &&
+            tab_cam_stage_host_libs && echo "$TFC_ST" > "$STAGE/tab_s9_fe_cam/.from_host" ||
+            echo "!!! Camera: failed to stage host Tab S9 FE SamsungCamera.apk/native libraries"
+    fi
+    if [ -f "$TFC_DIR/SamsungCamera.apk" ]; then
+        chown -R 0:0 "$TFC_DIR"
+        chmod 755 "$TFC_DIR" "$TFC_DIR/lib" "$TFC_DIR/lib/arm64" 2>/dev/null
+        chmod 644 "$TFC_DIR/SamsungCamera.apk" "$TFC_DIR"/lib/arm64/*.so 2>/dev/null
+        $BB chcon -R u:object_r:system_file:s0 "$TFC_DIR" 2>/dev/null || true
+        $BB umount -l "$OAC_DST" 2>/dev/null || true
+        $BB umount -l "$ROOTFS/system/etc/permissions/worker_wrapper_compat.xml" 2>/dev/null || true
+        WWC_XML="$STAGE/data/oneos_worker_wrapper_compat.xml"
+        printf '<?xml version="1.0" encoding="utf-8"?>\n<permissions>\n    <library name="oneos_tab_s9_fe_cam_compat" file="/system_ext/framework/OneOSTabS9FeCamCompat.jar" />\n    <library name="worker_wrapper_compat" file="/system/framework/worker_wrapper_compat.jar" dependency="oneos_tab_s9_fe_cam_compat" />\n    <feature name="com.samsung.android.camera.cameraserviceworker" version="2" />\n</permissions>\n' > "$WWC_XML"
+        chown 0:0 "$WWC_XML"; chmod 644 "$WWC_XML"
+        $BB chcon u:object_r:system_file:s0 "$WWC_XML" 2>/dev/null || true
+        if $BB mount --bind "$TFC_DIR" "$OAC_DST" &&
+           $BB mount --bind "$WWC_XML" "$ROOTFS/system/etc/permissions/worker_wrapper_compat.xml"; then
+            $BB mount -o remount,bind,ro "$OAC_DST" 2>/dev/null || true
+            $BB mount -o remount,bind,ro "$ROOTFS/system/etc/permissions/worker_wrapper_compat.xml" 2>/dev/null || true
+            # SamsungCamera opens its camera features and ML models by absolute
+            # /system/cameradata and /system/saiv paths. Keep those in sync with
+            # this tablet's host camera, rather than the S26 donor's sensor/model set.
+            for d in cameradata saiv; do
+                host_cam_data="/system/$d"
+                guest_cam_data="$ROOTFS/system/$d"
+                [ -d "$host_cam_data" ] && [ ! -L "$host_cam_data" ] &&
+                    [ -d "$guest_cam_data" ] && [ ! -L "$guest_cam_data" ] || continue
+                $BB umount -l "$guest_cam_data" 2>/dev/null || true
+                if $BB mount --bind "$host_cam_data" "$guest_cam_data"; then
+                    $BB mount --make-rslave "$guest_cam_data" 2>/dev/null || true
+                    $BB mount -o remount,bind,ro "$guest_cam_data" 2>/dev/null || true
+                    echo "Camera: Tab S9 FE host /system/$d model data bound over donor's"
+                else
+                    echo "!!! Camera: Tab S9 FE host /system/$d data could not be bound"
+                fi
+            done
+            ONEUI_A_CAMERA=1
+            OAC_ID="tab-host:$(sha256sum "$TFC_DIR/SamsungCamera.apk" | cut -c1-16)"
+            if [ "$(cat "$STAGE/data/oneos_camera_variant" 2>/dev/null)" != "$OAC_ID" ]; then
+                for d in "$STAGE/data/user/0/com.sec.android.app.camera" "$STAGE/data/user_de/0/com.sec.android.app.camera"; do
+                    [ -d "$d" ] && [ ! -L "$d" ] && rm -rf "${d:?}"/shared_prefs "${d:?}"/databases "${d:?}"/files "${d:?}"/cache 2>/dev/null
+                done
+                echo "$OAC_ID" > "$STAGE/data/oneos_camera_variant"
+                echo "Camera: the camera's data cleared (another camera than last session)"
+            fi
+            echo "Camera: Tab S9 FE host SamsungCamera.apk + OneOSTabS9FeCamCompat.jar bound ($(ls "$TFC_DIR/lib/arm64" 2>/dev/null | wc -l) extra host libs)"
+        else
+            $BB umount -l "$OAC_DST" 2>/dev/null
+            $BB umount -l "$ROOTFS/system/etc/permissions/worker_wrapper_compat.xml" 2>/dev/null
+            echo "!!! Camera: Tab S9 FE host camera bind failed; falling back to image camera"
+        fi
+    fi
+fi
+if [ "$A17_ON_A16" != 1 ] && [ $ONEUI_A_CAMERA = 0 ] && grep -q '^ro.build.version.oneui=' "$ROOTFS/system/build.prop" 2>/dev/null && [ "${ONEOS_ONEUI_A_CAMERA:-1}" = 1 ] &&
    [ "${ONEOS_ONEUI_HOST_CAMERA:-1}" = 1 ] && [ -d "$OAC_DST" ] && [ ! -L "$OAC_DST" ] &&
    [ -f "$HCAM_DIR/SamsungCamera.apk" ] && [ ! -L "$HCAM_DIR" ] && [ ! -L "$HCAM_DIR/SamsungCamera.apk" ]; then
     case "$(getprop ro.product.model):$(getprop ro.soc.manufacturer):$(getprop ro.board.platform)" in
@@ -8291,6 +8802,113 @@ if [ "${ONEOS_PROFILE:-}" = f8 ] && [ "$FORM" = fold ] &&
     fi
     rm -f "$f8_vendor.f8" "$f8_system.f8"
 fi
+# Tab S9 FE (SM-X510) on One UI 9.5:
+# Preserve the Tab S9 FE's tablet floating features (Taskbar, brand name, navbar theme, LCD
+# panel flags, and tablet/S-Pen HoneyBoard SIP flags) in both floating feature files, plus the
+# 20271 AI version floor (like Fold8).
+# Note: Do NOT bind host framework-res__gts9fewifixx__auto_generated_rro_product.apk over
+# S26 Ultra's m3qxxx product RRO: One UI 9.5's BrightnessMappingStrategy.create() requires
+# config_screenBrightnessNitsPrivacy (size 257), which One UI 9.0's Tab S9 FE RRO lacks.
+if [ "$ONEUI95_TAB_S9_FE" = 1 ]; then
+    # Declare com.samsung.feature.device_category_tablet instead of phone: HoneyBoard (and
+    # other One UI 9.5 Samsung apps) gate tablet layouts/keyboard proportions on
+    # PackageManager.hasSystemFeature("com.samsung.feature.device_category_tablet").
+    T9_CAT_H=/system/etc/permissions/com.samsung.feature.device_category_tablet.xml
+    T9_CAT_G="$ROOTFS/system/etc/permissions/com.samsung.feature.device_category_phone.xml"
+    if [ -f "$T9_CAT_H" ] && [ ! -L "$T9_CAT_H" ] && [ -f "$T9_CAT_G" ] && [ ! -L "$T9_CAT_G" ]; then
+        $BB umount -l "$T9_CAT_G" 2>/dev/null || true
+        if $BB mount --bind "$T9_CAT_H" "$T9_CAT_G"; then
+            $BB mount -o remount,bind,ro "$T9_CAT_G" 2>/dev/null || true
+            echo "One UI 9.5: bound com.samsung.feature.device_category_tablet.xml over phone feature XML"
+        else
+            $BB umount -l "$T9_CAT_G" 2>/dev/null || true
+            echo "!!! One UI 9.5: could not bind tablet device_category feature XML"
+        fi
+    fi
+    # Clear HoneyBoard data once when switching back from host HoneyBoard (or switching into tablet
+    # category for the first time) so Room DB and cached phone dimensions reset cleanly.
+    HB_MARKER="tablet-cat-v1"
+    if [ -f "$STAGE/data/oneos_honeyboard_variant" ] &&
+       [ "$(cat "$STAGE/data/oneos_honeyboard_variant" 2>/dev/null)" != "$HB_MARKER" ] ||
+       [ ! -f "$STAGE/data/oneos_honeyboard_variant" ]; then
+        for d in "$STAGE/data/user/0/com.samsung.android.honeyboard" "$STAGE/data/user_de/0/com.samsung.android.honeyboard"; do
+            [ -d "$d" ] && [ ! -L "$d" ] && rm -rf "${d:?}"/shared_prefs "${d:?}"/databases "${d:?}"/cache "${d:?}"/files 2>/dev/null
+        done
+        echo "$HB_MARKER" > "$STAGE/data/oneos_honeyboard_variant"
+        echo "Keyboard: cleared HoneyBoard data for One UI 9.5 tablet category"
+    fi
+    if [ "${ONEOS_ONEUI_FLOATING:-1}" = 1 ]; then
+        oneui95_tab_s9_fe_features() {
+            local input="$1" output="$2"
+            awk '
+                function set_feature(key, value) {
+                    if (!(key in values)) order[++count] = key
+                    values[key] = value
+                }
+                function read_feature(line,    tag) {
+                    if (!match(line, /<SEC_FLOATING_FEATURE_[A-Z0-9_]+>/)) return ""
+                    tag = substr(line, RSTART + 1, RLENGTH - 2)
+                    content = substr(line, RSTART + RLENGTH)
+                    sub(/<.*/, "", content)
+                    return tag
+                }
+                function print_feature(key) {
+                    print "    <" key ">" values[key] "</" key ">"
+                }
+                BEGIN {
+                    taskbar = "SEC_FLOATING_FEATURE_LAUNCHER_SUPPORT_TASKBAR"
+                    brand = "SEC_FLOATING_FEATURE_SETTINGS_CONFIG_BRAND_NAME"
+                    navigation = "SEC_FLOATING_FEATURE_FRAMEWORK_CONFIG_NAVIGATION_BAR_THEME"
+                    ai = "SEC_FLOATING_FEATURE_COMMON_CONFIG_AI_VERSION"
+                    set_feature(ai, "20271")
+                }
+                FILENAME != ARGV[3] {
+                    key = read_feature($0)
+                    if (key == "") next
+                    if (key == taskbar && content == "TRUE")
+                        set_feature(key, content)
+                    else if (key == brand && content ~ /^Galaxy Tab S9 FE/)
+                        set_feature(key, content)
+                    else if (key == navigation && content ~ /^[A-Za-z0-9_|]+$/)
+                        set_feature(key, content)
+                    else if (key ~ /^SEC_FLOATING_FEATURE_LCD_CONFIG_/ || key ~ /^SEC_FLOATING_FEATURE_SIP_/)
+                        set_feature(key, content)
+                    next
+                }
+                {
+                    key = read_feature($0)
+                    if (key == ai && content ~ /^[0-9]+$/ && content + 0 > values[ai] + 0)
+                        set_feature(key, content)
+                    if (key in values) {
+                        if (!(key in written)) print_feature(key)
+                        written[key] = 1
+                        next
+                    }
+                    if ($0 ~ /<\/SecFloatingFeatureSet>/) {
+                        for (i = 1; i <= count; i++)
+                            if (!(order[i] in written)) print_feature(order[i])
+                        closed = 1
+                    }
+                    print
+                }
+                END { if (!closed) exit 1 }
+            ' /vendor/etc/floating_feature.xml /system/etc/floating_feature.xml "$input" > "$output"
+        }
+        t9_vendor="$STAGE/data/oneos_floating_feature.xml"
+        t9_system="$STAGE/data/oneos_system_floating_feature.xml"
+        if [ -s "$t9_vendor" ] && [ -s "$t9_system" ] &&
+           oneui95_tab_s9_fe_features "$t9_vendor" "$t9_vendor.t9" &&
+           oneui95_tab_s9_fe_features "$t9_system" "$t9_system.t9" &&
+           chown 0:0 "$t9_vendor.t9" "$t9_system.t9" &&
+           chmod 644 "$t9_vendor.t9" "$t9_system.t9"; then
+            mv -f "$t9_vendor.t9" "$t9_vendor" && mv -f "$t9_system.t9" "$t9_system" &&
+                echo "Floating features: Tab S9 FE tablet, LCD, HoneyBoard SIP and AI 20271 floor applied"
+        else
+            echo "!!! Floating features: could not apply the Tab S9 FE profile to both files"
+        fi
+        rm -f "$t9_vendor.t9" "$t9_system.t9"
+    fi
+fi
 # The phone's eSIM chip is shared hardware, and an eSIM manager (LPA) in the
 # guest drives it directly: Pixel's EuiccGoogle opens the chip's ISD-R channel
 # itself (run 43). A guest factory reset with "Erase eSIMs", Reset mobile
@@ -8425,8 +9043,11 @@ fi
 # CameraAdapterUtils), often dozens of times a session, and its launcher icon is
 # the one users tap ("Camera crashed": 0.4.58 reports 45bc960f, d89cc8a5,
 # 74bcf2b6). Samsung Camera is then the camera.
-if [ "${ONEOS_GUEST_OEM_CAMERA:-0}" != 1 ] && { [ -d "$GUEST_PRODUCT/app/Aperture" ] || [ -d "$GUEST_SYSTEM_EXT/app/Aperture" ] || [ "$SAMCAM" = 1 ]; }; then
-    if [ "$SAMCAM" = 1 ]; then OCWHY="Samsung Camera is the camera"; else OCWHY="Aperture is the camera"; fi
+# ColorOS 17 on One UI 8 (A17_ON_A16, 0.5.51 testing): no Samsung Camera in that set, and OPPO's camera crashed at
+# every start on the same SDK class (abhera, S22 Ultra, coloros22test6 logs-e99d05d4: 10 times in 11 minutes). Hidden
+# there too; a camera2 app (Open Camera) from the store is the camera.
+if [ "${ONEOS_GUEST_OEM_CAMERA:-0}" != 1 ] && { [ -d "$GUEST_PRODUCT/app/Aperture" ] || [ -d "$GUEST_SYSTEM_EXT/app/Aperture" ] || [ "$SAMCAM" = 1 ] || [ "$A17_ON_A16" = 1 ]; }; then
+    if [ "$SAMCAM" = 1 ]; then OCWHY="Samsung Camera is the camera"; elif [ "$A17_ON_A16" = 1 ]; then OCWHY="One UI 8 phone: a camera2 app from the store is the camera"; else OCWHY="Aperture is the camera"; fi
     for d in "$GUEST_SYSTEM_EXT"/priv-app/OplusCamera "$ROOTFS"/system/priv-app/OplusCamera "$GUEST_PRODUCT"/priv-app/OplusCamera \
              "$ROOTFS"/my_*/app/OplusCamera "$ROOTFS"/my_*/priv-app/OplusCamera; do
         [ -d "$d" ] && [ ! -L "$d" ] || continue
